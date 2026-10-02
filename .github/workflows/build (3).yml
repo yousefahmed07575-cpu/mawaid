@@ -25,6 +25,10 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
+      # الخطوة السحرية: إنشاء مجلد android تلقائياً
+      - name: Create Android Project Files
+        run: flutter create .
+
       - name: Get dependencies
         run: flutter pub get
 
