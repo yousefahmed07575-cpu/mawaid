@@ -34,10 +34,32 @@ jobs:
 
       - name: Upgrade Kotlin version
         run: |
-          sed -i 's/ext.kotlin_version = .*/ext.kotlin_version = "1.9.22"/' temp_project/android/build.gradle
-          if ! grep -q 'ext.kotlin_version' temp_project/android/build.gradle; then
-            sed -i 's/^buildscript {/buildscript {\n    ext.kotlin_version = "1.9.22"/' temp_project/android/build.gradle
+          echo "📁 Files in android folder:"
+          ls temp_project/android/
+          echo ""
+          echo "🔍 Current Kotlin version in settings.gradle:"
+          cat temp_project/android/settings.gradle | grep -i kotlin || echo "not found in settings.gradle"
+          echo ""
+          echo "🔍 Current Kotlin version in build.gradle:"
+          cat temp_project/android/build.gradle | grep -i kotlin || echo "not found in build.gradle"
+          echo ""
+          echo "🔧 Updating Kotlin version..."
+          # الطريقة الجديدة (Flutter 3.x الحديث) - settings.gradle
+          if [ -f temp_project/android/settings.gradle ]; then
+            sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.22"/' temp_project/android/settings.gradle
+            echo "✅ Updated settings.gradle"
           fi
+          # الطريقة القديمة - build.gradle
+          if [ -f temp_project/android/build.gradle ]; then
+            sed -i 's/ext.kotlin_version = .*/ext.kotlin_version = "1.9.22"/' temp_project/android/build.gradle
+            echo "✅ Updated build.gradle (if needed)"
+          fi
+          echo ""
+          echo "🔍 After update - settings.gradle:"
+          cat temp_project/android/settings.gradle | grep -i kotlin || echo "not found"
+          echo ""
+          echo "🔍 After update - build.gradle:"
+          cat temp_project/android/build.gradle | grep -i kotlin || echo "not found"
 
       - name: Add permissions to AndroidManifest
         run: |
@@ -49,6 +71,7 @@ jobs:
           mkdir -p temp_project/android/app/src/main/res/drawable
           if [ -f assets/notification_icon.png ]; then
             cp assets/notification_icon.png temp_project/android/app/src/main/res/drawable/notification_icon.png
+            echo "✅ Notification icon copied"
           else
             echo "⚠️ notification_icon.png not found, using default"
           fi
