@@ -10,10 +10,8 @@ import 'dart:io';
 import 'package:alarm/alarm.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -23,7 +21,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 final GlobalKey<NavigatorState> navKey = GlobalKey<NavigatorState>();
 
 // ═══════════════════════════════════════════════════════════════
-//  Main - تهيئة خدمة المنبه
+//  Main
 // ═══════════════════════════════════════════════════════════════
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -86,38 +84,35 @@ class StudySession {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Alarm Service - إدارة المنبهات باستخدام مكتبة alarm
+//  Alarm Service
 // ═══════════════════════════════════════════════════════════════
 class AlarmService {
   AlarmService._();
   static final AlarmService I = AlarmService._();
 
-  // معرفات المنبهات النشطة (int لأن المكتبة بتطلب int)
-  final Map<String, int> _alarmIds = {};
-
   int _generateId(String appointmentId) {
-    // نحوّل الـ String ID لـ int ثابت باستخدام hashCode
     return appointmentId.hashCode & 0x7fffffff;
   }
 
   /// جدولة منبه جديد
   Future<void> schedule(Appointment a) async {
     final alarmId = _generateId(a.id);
-    _alarmIds[a.id] = alarmId;
 
-    // لو الملف الصوتي موجود، استخدمه. لو مش موجود، استخدم الصوت الافتراضي
-    String? soundPath;
+    // الصوت: لو موجود ملف مخصص استخدمه، وإلا استخدم صوت المنبه الافتراضي
+    String soundPath;
     if (a.soundPath != null && File(a.soundPath!).existsSync()) {
-      soundPath = a.soundPath;
+      soundPath = a.soundPath!;
+    } else {
+      soundPath = 'content://settings/system/alarm_alert';
     }
 
     final settings = AlarmSettings(
       id: alarmId,
       dateTime: a.dateTime,
-      assetAudioPath: soundPath, // مسار الملف الصوتي المخصص
+      assetAudioPath: soundPath,
       loopAudio: true,
       vibrate: true,
-      androidFullScreenIntent: true, // عشان تظهر الشاشة كاملة
+      androidFullScreenIntent: true,
       volumeSettings: VolumeSettings.fade(
         volume: 1.0,
         fadeDuration: const Duration(seconds: 3),
@@ -127,8 +122,6 @@ class AlarmService {
         title: '⏰ ${a.title}',
         body: a.note.isEmpty ? 'اضغط لإيقاف المنبه' : a.note,
         stopButton: 'إيقاف',
-        icon: 'notification_icon',
-        iconColor: const Color(0xff862778),
       ),
     );
 
@@ -137,17 +130,13 @@ class AlarmService {
 
   /// إلغاء منبه
   Future<void> cancel(String appointmentId) async {
-    final alarmId = _alarmIds[appointmentId];
-    if (alarmId != null) {
-      await Alarm.stop(alarmId);
-      _alarmIds.remove(appointmentId);
-    }
+    final alarmId = _generateId(appointmentId);
+    await Alarm.stop(alarmId);
   }
 
   /// إلغاء كل المنبهات
   Future<void> cancelAll() async {
     await Alarm.stopAll();
-    _alarmIds.clear();
   }
 }
 
@@ -169,7 +158,6 @@ class AppState extends ChangeNotifier {
     final sp = await SharedPreferences.getInstance();
     isDark = sp.getBool(_kDark) ?? false;
 
-    // تحميل المواعيد
     final aRaw = sp.getString(_kAppts);
     if (aRaw != null) {
       try {
@@ -181,7 +169,6 @@ class AppState extends ChangeNotifier {
       } catch (_) {}
     }
 
-    // تحميل الجلسات
     final sRaw = sp.getString(_kSessions);
     if (sRaw != null) {
       try {
@@ -193,12 +180,10 @@ class AppState extends ChangeNotifier {
       } catch (_) {}
     }
 
-    // الاستماع لأحداث المنبه
     _alarmSub = Alarm.ringStream.stream.listen((alarmSettings) {
       _onAlarmRing(alarmSettings);
     });
 
-    // إعادة جدولة المواعيد القادمة
     for (final a in appointments) {
       if (a.dateTime.isAfter(DateTime.now())) {
         await AlarmService.I.schedule(a);
@@ -209,9 +194,8 @@ class AppState extends ChangeNotifier {
   }
 
   void _onAlarmRing(AlarmSettings settings) {
-    // البحث عن الموعد المرتبط بالمنبه
     final appt = appointments.firstWhere(
-      (a) => a.id.hashCode & 0x7fffffff == settings.id,
+      (a) => (a.id.hashCode & 0x7fffffff) == settings.id,
       orElse: () => Appointment(
         id: settings.id.toString(),
         title: 'موعد',
@@ -220,7 +204,6 @@ class AppState extends ChangeNotifier {
       ),
     );
 
-    // فتح شاشة المنبه
     navKey.currentState?.push(
       MaterialPageRoute(
         builder: (_) => AlarmScreen(appointment: appt),
@@ -228,7 +211,6 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  // ─── الحفظ ───
   Future<void> _persistAppts() async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(
@@ -245,7 +227,6 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  // ─── إضافة موعد ───
   Future<void> addAppointment(Appointment a) async {
     appointments.add(a);
     appointments.sort((x, y) => x.dateTime.compareTo(y.dateTime));
@@ -254,7 +235,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── تعديل موعد ───
   Future<void> updateAppointment(Appointment a) async {
     final i = appointments.indexWhere((x) => x.id == a.id);
     if (i == -1) return;
@@ -266,7 +246,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── حذف موعد ───
   Future<void> deleteAppointment(String id) async {
     appointments.removeWhere((x) => x.id == id);
     await AlarmService.I.cancel(id);
@@ -274,7 +253,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── مسح كل البيانات ───
   Future<void> clearAll() async {
     appointments.clear();
     sessions.clear();
@@ -285,7 +263,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── الوضع الليلي ───
   Future<void> toggleDark() async {
     isDark = !isDark;
     final sp = await SharedPreferences.getInstance();
@@ -293,7 +270,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── إضافة جلسة مذاكرة ───
   Future<void> addSession(int minutes) async {
     sessions.add(StudySession(date: DateTime.now(), minutes: minutes));
     await _persistSessions();
@@ -540,7 +516,6 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
       final r = await FilePicker.platform.pickFiles(type: FileType.audio);
       if (r == null || r.files.single.path == null) return;
       final src = File(r.files.single.path!);
-      // انسخه لمكان دائم عشان المكتبة تقدر توصل له
       final dir = await getApplicationDocumentsDirectory();
       final ext = r.files.single.extension ?? 'mp3';
       final dest = File(
@@ -693,7 +668,7 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Alarm Screen (شاشة المنبه)
+//  Alarm Screen
 // ═══════════════════════════════════════════════════════════════
 class AlarmScreen extends StatelessWidget {
   final Appointment appointment;
@@ -745,8 +720,8 @@ class AlarmScreen extends StatelessWidget {
                   height: 70,
                   child: FilledButton.icon(
                     onPressed: () async {
-                      // إيقاف الصوت عن طريق مكتبة alarm
-                      await Alarm.stop(appointment.id.hashCode & 0x7fffffff);
+                      await Alarm.stop(
+                          appointment.id.hashCode & 0x7fffffff);
                       if (context.mounted) {
                         Navigator.of(context).pop();
                       }
