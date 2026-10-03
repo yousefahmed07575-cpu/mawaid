@@ -35,12 +35,25 @@ jobs:
       - name: Add permissions to AndroidManifest
         run: |
           MANIFEST="temp_project/android/app/src/main/AndroidManifest.xml"
-          sed -i 's|<application|<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application|' $MANIFEST
+          sed -i 's|<application|<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>\n    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>\n    <application|' $MANIFEST
+
+      - name: Add notification icon
+        run: |
+          mkdir -p temp_project/android/app/src/main/res/drawable
+          if [ -f assets/notification_icon.png ]; then
+            cp assets/notification_icon.png temp_project/android/app/src/main/res/drawable/notification_icon.png
+          else
+            echo "⚠️ notification_icon.png not found, using default"
+          fi
 
       - name: Copy our custom code
         run: |
           cp lib/main.dart temp_project/lib/main.dart
           cp pubspec.yaml temp_project/pubspec.yaml
+          if [ -d assets ]; then
+            mkdir -p temp_project/assets
+            cp -r assets/* temp_project/assets/ 2>/dev/null || true
+          fi
 
       - name: Get dependencies
         run: cd temp_project && flutter pub get

@@ -1,562 +1,467 @@
+// ═══════════════════════════════════════════════════════════════
+//  mawaid - تطبيق مواعيد ومنبه المذاكرة
+//  المهندس يوسف أحمد مصطفى
+// ═══════════════════════════════════════════════════════════════
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' as ui;
 
-import 'package:audioplayers/audioplayers.dart';
+import 'package:alarm/alarm.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:timezone/data/latest.dart' as tz;
-import 'package:timezone/timezone.dart' as tz;
 
-void main() async {
+// ═══════════════════════════════════════════════════════════════
+//  Global Navigator Key
+// ═══════════════════════════════════════════════════════════════
+final GlobalKey<NavigatorState> navKey = GlobalKey<NavigatorState>();
+
+// ═══════════════════════════════════════════════════════════════
+//  Main - تهيئة خدمة المنبه
+// ═══════════════════════════════════════════════════════════════
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  tz.initializeTimeZones();
-  tz.setLocalLocation(tz.getLocation('Africa/Cairo'));
-  await StorageService.init();
-  await NotificationService.init();
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(statusBarColor: Colors.transparent),
-  );
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  runApp(const MawaidApp());
-}
-
-class MawaidApp extends StatelessWidget {
-  const MawaidApp({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => ThemeProvider(),
-      child: Consumer<ThemeProvider>(
-        builder: (context, themeProvider, _) {
-          return MaterialApp(
-            title: 'مواعيد',
-            debugShowCheckedModeBanner: false,
-            theme: AppTheme.lightTheme,
-            darkTheme: AppTheme.darkTheme,
-            themeMode: themeProvider.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-            locale: const Locale('ar', 'EG'),
-            builder: (context, child) => Directionality(
-              textDirection: ui.TextDirection.rtl,
-              child: child!,
-            ),
-            home: const SplashScreen(),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class AppColors {
-  static const Color primary = Color(0xFF2196F3);
-  static const Color accent = Color(0xFF00BCD4);
-  static const Color background = Color(0xFFF5F7FA);
-  static const Color backgroundDark = Color(0xFF121212);
-  static const Color cardDark = Color(0xFF1E1E1E);
-  static const Color success = Color(0xFF4CAF50);
-  static const Color error = Color(0xFFF44336);
-  static const Color pomodoroWork = Color(0xFFE53935);
-  static const Color pomodoroBreak = Color(0xFF43A047);
-}
-
-class AppTheme {
-  static ThemeData lightTheme = ThemeData(
-    useMaterial3: true,
-    brightness: Brightness.light,
-    primaryColor: AppColors.primary,
-    scaffoldBackgroundColor: AppColors.background,
-    colorScheme: const ColorScheme.light(
-      primary: AppColors.primary, secondary: AppColors.accent, surface: Colors.white),
-    appBarTheme: const AppBarTheme(
-      backgroundColor: AppColors.primary, foregroundColor: Colors.white,
-      elevation: 0, centerTitle: true,
-      titleTextStyle: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-    elevatedButtonTheme: ElevatedButtonThemeData(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: AppColors.primary, foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)))),
-  );
-
-  static ThemeData darkTheme = ThemeData(
-    useMaterial3: true,
-    brightness: Brightness.dark,
-    primaryColor: AppColors.primary,
-    scaffoldBackgroundColor: AppColors.backgroundDark,
-    colorScheme: const ColorScheme.dark(
-      primary: AppColors.primary, secondary: AppColors.accent, surface: AppColors.cardDark),
-    appBarTheme: const AppBarTheme(
-      backgroundColor: AppColors.cardDark, foregroundColor: Colors.white,
-      elevation: 0, centerTitle: true,
-      titleTextStyle: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-    elevatedButtonTheme: ElevatedButtonThemeData(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: AppColors.primary, foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)))),
+  await Alarm.init();
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => AppState()..init(),
+      child: const MawaidApp(),
+    ),
   );
 }
 
-class ThemeProvider extends ChangeNotifier {
-  bool _isDarkMode = false;
-  bool get isDarkMode => _isDarkMode;
-  ThemeProvider() { _load(); }
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    _isDarkMode = prefs.getBool('darkMode') ?? false;
-    notifyListeners();
-  }
-  Future<void> toggleTheme() async {
-    _isDarkMode = !_isDarkMode;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('darkMode', _isDarkMode);
-    notifyListeners();
-  }
-}
-
-enum RepeatType { once, daily, specificDays }
-
+// ═══════════════════════════════════════════════════════════════
+//  Models
+// ═══════════════════════════════════════════════════════════════
 class Appointment {
-  String id;
+  final String id;
   String title;
-  int hour;
-  int minute;
-  String audioPath;
-  RepeatType repeatType;
-  List<int> selectedDays;
-  bool isActive;
-  DateTime createdAt;
+  String note;
+  DateTime dateTime;
+  String? soundPath;
 
   Appointment({
-    required this.id, required this.title,
-    required this.hour, required this.minute,
-    this.audioPath = '', this.repeatType = RepeatType.once,
-    this.selectedDays = const [], this.isActive = true,
-    DateTime? createdAt,
-  }) : createdAt = createdAt ?? DateTime.now();
-
-  String get time12String {
-    final period = hour >= 12 ? 'م' : 'ص';
-    final h12 = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
-    return '$h12:${minute.toString().padLeft(2, '0')} $period';
-  }
-
-  String get repeatDescription {
-    switch (repeatType) {
-      case RepeatType.once: return 'مرة واحدة';
-      case RepeatType.daily: return 'كل يوم';
-      case RepeatType.specificDays:
-        if (selectedDays.isEmpty) return 'أيام محددة';
-        final names = ['السبت','الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة'];
-        return selectedDays.map((d) => names[d]).join('، ');
-    }
-  }
-
-  Map<String, dynamic> toJson() => {
-    'id': id, 'title': title, 'hour': hour, 'minute': minute,
-    'audioPath': audioPath, 'repeatType': repeatType.index,
-    'selectedDays': selectedDays, 'isActive': isActive,
-    'createdAt': createdAt.toIso8601String(),
-  };
-
-  factory Appointment.fromJson(Map<String, dynamic> json) => Appointment(
-    id: json['id'] as String, title: json['title'] as String,
-    hour: json['hour'] as int, minute: json['minute'] as int,
-    audioPath: json['audioPath'] as String? ?? '',
-    repeatType: RepeatType.values[json['repeatType'] as int],
-    selectedDays: List<int>.from(json['selectedDays'] as List),
-    isActive: json['isActive'] as bool? ?? true,
-    createdAt: DateTime.parse(json['createdAt'] as String),
-  );
-}
-
-class PomodoroSettings {
-  int workMinutes;
-  int breakMinutes;
-  String startAudioPath;
-  String breakAudioPath;
-  PomodoroSettings({
-    this.workMinutes = 20, this.breakMinutes = 5,
-    this.startAudioPath = '', this.breakAudioPath = '',
+    required this.id,
+    required this.title,
+    required this.note,
+    required this.dateTime,
+    this.soundPath,
   });
+
   Map<String, dynamic> toJson() => {
-    'workMinutes': workMinutes, 'breakMinutes': breakMinutes,
-    'startAudioPath': startAudioPath, 'breakAudioPath': breakAudioPath,
-  };
-  factory PomodoroSettings.fromJson(Map<String, dynamic> json) => PomodoroSettings(
-    workMinutes: json['workMinutes'] as int? ?? 20,
-    breakMinutes: json['breakMinutes'] as int? ?? 5,
-    startAudioPath: json['startAudioPath'] as String? ?? '',
-    breakAudioPath: json['breakAudioPath'] as String? ?? '',
-  );
+        'id': id,
+        'title': title,
+        'note': note,
+        'dateTime': dateTime.toIso8601String(),
+        'soundPath': soundPath,
+      };
+
+  factory Appointment.fromJson(Map<String, dynamic> j) => Appointment(
+        id: j['id'] as String,
+        title: j['title'] as String,
+        note: (j['note'] ?? '') as String,
+        dateTime: DateTime.parse(j['dateTime'] as String),
+        soundPath: j['soundPath'] as String?,
+      );
 }
 
 class StudySession {
-  String id;
-  DateTime startTime;
-  DateTime endTime;
-  int durationMinutes;
-  StudySession({required this.id, required this.startTime, required this.endTime, required this.durationMinutes});
-  Map<String, dynamic> toJson() => {
-    'id': id, 'startTime': startTime.toIso8601String(),
-    'endTime': endTime.toIso8601String(), 'durationMinutes': durationMinutes,
-  };
-  factory StudySession.fromJson(Map<String, dynamic> json) => StudySession(
-    id: json['id'] as String,
-    startTime: DateTime.parse(json['startTime'] as String),
-    endTime: DateTime.parse(json['endTime'] as String),
-    durationMinutes: json['durationMinutes'] as int,
-  );
+  final DateTime date;
+  final int minutes;
+  StudySession({required this.date, required this.minutes});
+
+  Map<String, dynamic> toJson() =>
+      {'date': date.toIso8601String(), 'minutes': minutes};
+
+  factory StudySession.fromJson(Map<String, dynamic> j) => StudySession(
+        date: DateTime.parse(j['date'] as String),
+        minutes: j['minutes'] as int,
+      );
 }
 
-class StudyStatistics {
-  final int todayMinutes, weekMinutes, monthMinutes, totalMinutes, totalSessions;
-  StudyStatistics({
-    this.todayMinutes = 0, this.weekMinutes = 0,
-    this.monthMinutes = 0, this.totalMinutes = 0, this.totalSessions = 0,
-  });
-  static String formatMinutes(int minutes) {
-    if (minutes < 60) return '$minutes دقيقة';
-    final h = minutes ~/ 60;
-    final m = minutes % 60;
-    if (m == 0) return '$h ساعة';
-    return '$h ساعة و $m دقيقة';
-  }
-  String get todayFormatted => formatMinutes(todayMinutes);
-  String get weekFormatted => formatMinutes(weekMinutes);
-  String get monthFormatted => formatMinutes(monthMinutes);
-  String get totalFormatted => formatMinutes(totalMinutes);
-}
+// ═══════════════════════════════════════════════════════════════
+//  Alarm Service - إدارة المنبهات باستخدام مكتبة alarm
+// ═══════════════════════════════════════════════════════════════
+class AlarmService {
+  AlarmService._();
+  static final AlarmService I = AlarmService._();
 
-class StorageService {
-  static late SharedPreferences _prefs;
-  static const _appointmentsKey = 'appointments';
-  static const _pomodoroKey = 'pomodoro';
-  static const _sessionsKey = 'sessions';
+  // معرفات المنبهات النشطة (int لأن المكتبة بتطلب int)
+  final Map<String, int> _alarmIds = {};
 
-  static Future<void> init() async {
-    _prefs = await SharedPreferences.getInstance();
+  int _generateId(String appointmentId) {
+    // نحوّل الـ String ID لـ int ثابت باستخدام hashCode
+    return appointmentId.hashCode & 0x7fffffff;
   }
 
-  static List<Appointment> getAppointments() {
-    final data = _prefs.getString(_appointmentsKey);
-    if (data == null || data.isEmpty) return [];
-    return (jsonDecode(data) as List)
-        .map((e) => Appointment.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
+  /// جدولة منبه جديد
+  Future<void> schedule(Appointment a) async {
+    final alarmId = _generateId(a.id);
+    _alarmIds[a.id] = alarmId;
 
-  static Future<void> saveAppointments(List<Appointment> list) async {
-    await _prefs.setString(_appointmentsKey,
-        jsonEncode(list.map((e) => e.toJson()).toList()));
-  }
-
-  static PomodoroSettings getPomodoroSettings() {
-    final data = _prefs.getString(_pomodoroKey);
-    if (data == null || data.isEmpty) return PomodoroSettings();
-    return PomodoroSettings.fromJson(jsonDecode(data) as Map<String, dynamic>);
-  }
-
-  static Future<void> savePomodoroSettings(PomodoroSettings s) async {
-    await _prefs.setString(_pomodoroKey, jsonEncode(s.toJson()));
-  }
-
-  static List<StudySession> getSessions() {
-    final data = _prefs.getString(_sessionsKey);
-    if (data == null || data.isEmpty) return [];
-    return (jsonDecode(data) as List)
-        .map((e) => StudySession.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
-
-  static Future<void> saveSessions(List<StudySession> list) async {
-    await _prefs.setString(_sessionsKey,
-        jsonEncode(list.map((e) => e.toJson()).toList()));
-  }
-
-  static Future<void> addSession(StudySession s) async {
-    final list = getSessions();
-    list.add(s);
-    await saveSessions(list);
-  }
-
-  static StudyStatistics getStatistics() {
-    final sessions = getSessions();
-    final now = DateTime.now();
-    final todayStart = DateTime(now.year, now.month, now.day);
-    final weekStart = todayStart.subtract(Duration(days: now.weekday - 1));
-    final monthStart = DateTime(now.year, now.month, 1);
-    int today = 0, week = 0, month = 0, total = 0;
-    for (final s in sessions) {
-      total += s.durationMinutes;
-      if (s.startTime.isAfter(todayStart)) today += s.durationMinutes;
-      if (s.startTime.isAfter(weekStart)) week += s.durationMinutes;
-      if (s.startTime.isAfter(monthStart)) month += s.durationMinutes;
+    // لو الملف الصوتي موجود، استخدمه. لو مش موجود، استخدم الصوت الافتراضي
+    String? soundPath;
+    if (a.soundPath != null && File(a.soundPath!).existsSync()) {
+      soundPath = a.soundPath;
     }
-    return StudyStatistics(
-      todayMinutes: today, weekMinutes: week, monthMinutes: month,
-      totalMinutes: total, totalSessions: sessions.length,
+
+    final settings = AlarmSettings(
+      id: alarmId,
+      dateTime: a.dateTime,
+      assetAudioPath: soundPath, // مسار الملف الصوتي المخصص
+      loopAudio: true,
+      vibrate: true,
+      androidFullScreenIntent: true, // عشان تظهر الشاشة كاملة
+      volumeSettings: VolumeSettings.fade(
+        volume: 1.0,
+        fadeDuration: const Duration(seconds: 3),
+        volumeEnforced: false,
+      ),
+      notificationSettings: NotificationSettings(
+        title: '⏰ ${a.title}',
+        body: a.note.isEmpty ? 'اضغط لإيقاف المنبه' : a.note,
+        stopButton: 'إيقاف',
+        icon: 'notification_icon',
+        iconColor: const Color(0xff862778),
+      ),
     );
+
+    await Alarm.set(alarmSettings: settings);
   }
 
-  static Future<void> clearAll() async { await _prefs.clear(); }
-}
-
-class NotificationService {
-  static final _plugin = FlutterLocalNotificationsPlugin();
-
-  static Future<void> init() async {
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const ios = DarwinInitializationSettings();
-    const settings = InitializationSettings(android: android, iOS: ios);
-    await _plugin.initialize(settings);
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
-  }
-
-  static Future<void> scheduleAppointment(Appointment a) async {
-    await cancelAppointment(a.id);
-    if (!a.isActive) return;
-    const androidDetails = AndroidNotificationDetails(
-      'appointments_channel', 'المواعيد',
-      channelDescription: 'تذكيرات المواعيد',
-      importance: Importance.max, priority: Priority.high,
-      playSound: true, fullScreenIntent: true,
-      category: AndroidNotificationCategory.alarm,
-    );
-    const details = NotificationDetails(android: androidDetails);
-    if (a.repeatType == RepeatType.daily) {
-      await _plugin.periodicallyShow(
-        a.id.hashCode, 'موعد: ${a.title}', 'الوقت الآن ${a.time12String}',
-        RepeatInterval.daily, details,
-        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      );
-    } else {
-      final now = DateTime.now();
-      var scheduled = DateTime(now.year, now.month, now.day, a.hour, a.minute);
-      if (scheduled.isBefore(now)) {
-        scheduled = scheduled.add(const Duration(days: 1));
-      }
-      await _plugin.zonedSchedule(
-        a.id.hashCode, 'موعد: ${a.title}', 'الوقت الآن ${a.time12String}',
-        tz.TZDateTime.from(scheduled, tz.local), details,
-        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        uiLocalNotificationDateInterpretation:
-            UILocalNotificationDateInterpretation.absoluteTime,
-      );
+  /// إلغاء منبه
+  Future<void> cancel(String appointmentId) async {
+    final alarmId = _alarmIds[appointmentId];
+    if (alarmId != null) {
+      await Alarm.stop(alarmId);
+      _alarmIds.remove(appointmentId);
     }
   }
 
-  static Future<void> cancelAppointment(String id) async =>
-      await _plugin.cancel(id.hashCode);
-  static Future<void> cancelAll() async => await _plugin.cancelAll();
+  /// إلغاء كل المنبهات
+  Future<void> cancelAll() async {
+    await Alarm.stopAll();
+    _alarmIds.clear();
+  }
 }
 
-class AudioService {
-  static final AudioPlayer _player = AudioPlayer();
-  static bool _isPlaying = false;
+// ═══════════════════════════════════════════════════════════════
+//  App State
+// ═══════════════════════════════════════════════════════════════
+class AppState extends ChangeNotifier {
+  static const _kAppts = 'appointments_v3';
+  static const _kSessions = 'sessions_v3';
+  static const _kDark = 'dark_mode_v3';
 
-  static bool get isPlaying => _isPlaying;
+  final List<Appointment> appointments = [];
+  final List<StudySession> sessions = [];
+  bool isDark = false;
 
-  static Future<String?> pickAudioFile() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.audio,
-        allowMultiple: false,
-      );
-      if (result != null && result.files.single.path != null) {
-        return result.files.single.path!;
-      }
-      return null;
-    } catch (e) {
-      return null;
+  StreamSubscription? _alarmSub;
+
+  Future<void> init() async {
+    final sp = await SharedPreferences.getInstance();
+    isDark = sp.getBool(_kDark) ?? false;
+
+    // تحميل المواعيد
+    final aRaw = sp.getString(_kAppts);
+    if (aRaw != null) {
+      try {
+        final List list = jsonDecode(aRaw) as List;
+        appointments.clear();
+        appointments.addAll(
+          list.map((e) => Appointment.fromJson(e as Map<String, dynamic>)),
+        );
+      } catch (_) {}
     }
-  }
 
-  static Future<void> play(String path, {bool loop = false}) async {
-    if (path.isEmpty) return;
-    _isPlaying = true;
-    await _player.setReleaseMode(loop ? ReleaseMode.loop : ReleaseMode.release);
-    await _player.play(DeviceFileSource(path));
-    _player.onPlayerComplete.listen((_) { _isPlaying = false; });
-  }
+    // تحميل الجلسات
+    final sRaw = sp.getString(_kSessions);
+    if (sRaw != null) {
+      try {
+        final List list = jsonDecode(sRaw) as List;
+        sessions.clear();
+        sessions.addAll(
+          list.map((e) => StudySession.fromJson(e as Map<String, dynamic>)),
+        );
+      } catch (_) {}
+    }
 
-  static Future<void> stop() async {
-    _isPlaying = false;
-    await _player.stop();
-  }
-}
-// ═══════════════════════════════════════════════════════
-//                    الشاشات
-// ═══════════════════════════════════════════════════════
-
-class SplashScreen extends StatefulWidget {
-  const SplashScreen({super.key});
-  @override
-  State<SplashScreen> createState() => _SplashScreenState();
-}
-
-class _SplashScreenState extends State<SplashScreen> {
-  @override
-  void initState() {
-    super.initState();
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) {
-        Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => const HomeScreen()));
-      }
+    // الاستماع لأحداث المنبه
+    _alarmSub = Alarm.ringStream.stream.listen((alarmSettings) {
+      _onAlarmRing(alarmSettings);
     });
+
+    // إعادة جدولة المواعيد القادمة
+    for (final a in appointments) {
+      if (a.dateTime.isAfter(DateTime.now())) {
+        await AlarmService.I.schedule(a);
+      }
+    }
+
+    notifyListeners();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.primary,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 140, height: 140,
-              decoration: BoxDecoration(
-                color: Colors.white, borderRadius: BorderRadius.circular(30)),
-              child: const Icon(Icons.notifications_active,
-                  size: 80, color: AppColors.primary),
-            ),
-            const SizedBox(height: 30),
-            const Text('مواعيد',
-                style: TextStyle(fontSize: 42, fontWeight: FontWeight.bold,
-                    color: Colors.white)),
-            const SizedBox(height: 10),
-            const Text('منبه المذاكرة',
-                style: TextStyle(fontSize: 18, color: Colors.white70)),
-          ],
-        ),
+  void _onAlarmRing(AlarmSettings settings) {
+    // البحث عن الموعد المرتبط بالمنبه
+    final appt = appointments.firstWhere(
+      (a) => a.id.hashCode & 0x7fffffff == settings.id,
+      orElse: () => Appointment(
+        id: settings.id.toString(),
+        title: 'موعد',
+        note: '',
+        dateTime: DateTime.now(),
+      ),
+    );
+
+    // فتح شاشة المنبه
+    navKey.currentState?.push(
+      MaterialPageRoute(
+        builder: (_) => AlarmScreen(appointment: appt),
       ),
     );
   }
-}
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  // ─── الحفظ ───
+  Future<void> _persistAppts() async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(
+      _kAppts,
+      jsonEncode(appointments.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  Future<void> _persistSessions() async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(
+      _kSessions,
+      jsonEncode(sessions.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  // ─── إضافة موعد ───
+  Future<void> addAppointment(Appointment a) async {
+    appointments.add(a);
+    appointments.sort((x, y) => x.dateTime.compareTo(y.dateTime));
+    await _persistAppts();
+    await AlarmService.I.schedule(a);
+    notifyListeners();
+  }
+
+  // ─── تعديل موعد ───
+  Future<void> updateAppointment(Appointment a) async {
+    final i = appointments.indexWhere((x) => x.id == a.id);
+    if (i == -1) return;
+    await AlarmService.I.cancel(a.id);
+    appointments[i] = a;
+    appointments.sort((x, y) => x.dateTime.compareTo(y.dateTime));
+    await _persistAppts();
+    await AlarmService.I.schedule(a);
+    notifyListeners();
+  }
+
+  // ─── حذف موعد ───
+  Future<void> deleteAppointment(String id) async {
+    appointments.removeWhere((x) => x.id == id);
+    await AlarmService.I.cancel(id);
+    await _persistAppts();
+    notifyListeners();
+  }
+
+  // ─── مسح كل البيانات ───
+  Future<void> clearAll() async {
+    appointments.clear();
+    sessions.clear();
+    await AlarmService.I.cancelAll();
+    final sp = await SharedPreferences.getInstance();
+    await sp.remove(_kAppts);
+    await sp.remove(_kSessions);
+    notifyListeners();
+  }
+
+  // ─── الوضع الليلي ───
+  Future<void> toggleDark() async {
+    isDark = !isDark;
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool(_kDark, isDark);
+    notifyListeners();
+  }
+
+  // ─── إضافة جلسة مذاكرة ───
+  Future<void> addSession(int minutes) async {
+    sessions.add(StudySession(date: DateTime.now(), minutes: minutes));
+    await _persistSessions();
+    notifyListeners();
+  }
+
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  void dispose() {
+    _alarmSub?.cancel();
+    super.dispose();
+  }
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  int _index = 0;
-  final _screens = const [
-    AppointmentsScreen(), PomodoroScreen(),
-    StatisticsScreen(), SettingsScreen(),
-  ];
+// ═══════════════════════════════════════════════════════════════
+//  App Root
+// ═══════════════════════════════════════════════════════════════
+class MawaidApp extends StatelessWidget {
+  const MawaidApp({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final dark = context.watch<AppState>().isDark;
+    return MaterialApp(
+      title: 'مواعيد',
+      debugShowCheckedModeBanner: false,
+      navigatorKey: navKey,
+      themeMode: dark ? ThemeMode.dark : ThemeMode.light,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
+        useMaterial3: true,
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+            seedColor: Colors.teal, brightness: Brightness.dark),
+        useMaterial3: true,
+      ),
+      home: const HomeScreen(),
+      locale: const Locale('ar'),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Home Screen
+// ═══════════════════════════════════════════════════════════════
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final appts = state.appointments;
+
     return Scaffold(
-      body: IndexedStack(index: _index, children: _screens),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.list), label: 'المواعيد'),
-          NavigationDestination(icon: Icon(Icons.timer), label: 'مذاكرة'),
-          NavigationDestination(icon: Icon(Icons.bar_chart), label: 'إحصائيات'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'الإعدادات'),
+      appBar: AppBar(
+        title: const Text('مواعيدي'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.timer_outlined),
+            tooltip: 'بومودورو',
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const PomodoroScreen())),
+          ),
+          IconButton(
+            icon: const Icon(Icons.bar_chart),
+            tooltip: 'الإحصائيات',
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const StatsScreen())),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'الإعدادات',
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const SettingsScreen())),
+          ),
         ],
       ),
-    );
-  }
-}
-
-class AppointmentsScreen extends StatefulWidget {
-  const AppointmentsScreen({super.key});
-  @override
-  State<AppointmentsScreen> createState() => _AppointmentsScreenState();
-}
-
-class _AppointmentsScreenState extends State<AppointmentsScreen> {
-  List<Appointment> _appointments = [];
-
-  @override
-  void initState() { super.initState(); _load(); }
-
-  void _load() {
-    setState(() { _appointments = StorageService.getAppointments(); });
-  }
-
-  Future<void> _delete(String id) async {
-    final list = StorageService.getAppointments();
-    list.removeWhere((a) => a.id == id);
-    await StorageService.saveAppointments(list);
-    await NotificationService.cancelAppointment(id);
-    _load();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('📅 المواعيد')),
-      body: _appointments.isEmpty
+      body: appts.isEmpty
           ? const Center(
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.event_note, size: 80, color: Colors.grey),
+                  Icon(Icons.alarm_off, size: 80, color: Colors.grey),
                   SizedBox(height: 16),
-                  Text('مفيش مواعيد لسه', style: TextStyle(fontSize: 18)),
+                  Text('مفيش مواعيد لسه',
+                      style: TextStyle(fontSize: 20, color: Colors.grey)),
                   SizedBox(height: 8),
-                  Text('اضغط + لإضافة موعد', style: TextStyle(color: Colors.grey)),
+                  Text('اضغط + عشان تضيف موعد',
+                      style: TextStyle(color: Colors.grey)),
                 ],
               ),
             )
           : ListView.builder(
               padding: const EdgeInsets.all(12),
-              itemCount: _appointments.length,
+              itemCount: appts.length,
               itemBuilder: (_, i) {
-                final a = _appointments[i];
+                final a = appts[i];
+                final soon = a.dateTime.difference(DateTime.now()).inMinutes;
                 return Card(
-                  margin: const EdgeInsets.only(bottom: 12),
+                  margin: const EdgeInsets.symmetric(vertical: 6),
                   child: ListTile(
-                    contentPadding: const EdgeInsets.all(12),
-                    leading: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: AppColors.primary.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12)),
-                      child: const Icon(Icons.notifications, color: AppColors.primary),
+                    leading: CircleAvatar(
+                      backgroundColor: soon < 0
+                          ? Colors.grey
+                          : soon < 60
+                              ? Colors.red
+                              : Colors.teal,
+                      child: const Icon(Icons.alarm, color: Colors.white),
                     ),
                     title: Text(a.title,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 16)),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const SizedBox(height: 4),
-                        Text('🕐 ${a.time12String}'),
-                        Text('🔁 ${a.repeatDescription}'),
+                        Text(DateFormat('EEEE d MMM - hh:mm a', 'ar')
+                            .format(a.dateTime)),
+                        if (a.note.isNotEmpty)
+                          Text(a.note,
+                              style: TextStyle(
+                                  color: Colors.grey.shade600, fontSize: 12)),
                       ],
                     ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (a.audioPath.isNotEmpty)
-                          IconButton(
-                            icon: const Icon(Icons.play_arrow, color: AppColors.success),
-                            onPressed: () => AudioService.play(a.audioPath),
-                          ),
                         IconButton(
-                          icon: const Icon(Icons.delete, color: AppColors.error),
-                          onPressed: () => _delete(a.id),
+                          icon: const Icon(Icons.edit, color: Colors.blue),
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => AddAppointmentScreen(existing: a),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () async {
+                            final ok = await showDialog<bool>(
+                              context: context,
+                              builder: (_) => AlertDialog(
+                                title: const Text('حذف الموعد'),
+                                content: Text('متأكد إنك عايز تحذف "${a.title}"؟'),
+                                actions: [
+                                  TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(context, false),
+                                      child: const Text('إلغاء')),
+                                  TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(context, true),
+                                      child: const Text('حذف',
+                                          style: TextStyle(color: Colors.red))),
+                                ],
+                              ),
+                            );
+                            if (ok == true) {
+                              await context
+                                  .read<AppState>()
+                                  .deleteAppointment(a.id);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text('تم حذف الموعد ✅')),
+                                );
+                              }
+                            }
+                          },
                         ),
                       ],
                     ),
@@ -565,145 +470,221 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
               },
             ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          await Navigator.push(context,
-              MaterialPageRoute(builder: (_) => const AddAppointmentScreen()));
-          _load();
-        },
-        icon: const Icon(Icons.add),
+        onPressed: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const AddAppointmentScreen())),
+        icon: const Icon(Icons.add_alarm),
         label: const Text('إضافة موعد'),
       ),
     );
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  Add / Edit Appointment Screen
+// ═══════════════════════════════════════════════════════════════
 class AddAppointmentScreen extends StatefulWidget {
-  const AddAppointmentScreen({super.key});
+  final Appointment? existing;
+  const AddAppointmentScreen({super.key, this.existing});
+
   @override
   State<AddAppointmentScreen> createState() => _AddAppointmentScreenState();
 }
 
 class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
   final _titleCtrl = TextEditingController();
+  final _noteCtrl = TextEditingController();
+  DateTime _date = DateTime.now().add(const Duration(minutes: 5));
   TimeOfDay _time = TimeOfDay.now();
-  RepeatType _repeat = RepeatType.once;
-  List<int> _days = [];
-  String _audioPath = '';
+  String? _soundPath;
 
-  final _dayNames = ['السبت','الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة'];
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      _titleCtrl.text = widget.existing!.title;
+      _noteCtrl.text = widget.existing!.note;
+      _date = widget.existing!.dateTime;
+      _time = TimeOfDay.fromDateTime(widget.existing!.dateTime);
+      _soundPath = widget.existing!.soundPath;
+    } else {
+      final d = DateTime.now().add(const Duration(minutes: 5));
+      _date = d;
+      _time = TimeOfDay.fromDateTime(d);
+    }
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate() async {
+    final d = await showDatePicker(
+      context: context,
+      initialDate: _date,
+      firstDate: DateTime.now().subtract(const Duration(days: 1)),
+      lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
+    );
+    if (d != null) setState(() => _date = d);
+  }
 
   Future<void> _pickTime() async {
     final t = await showTimePicker(context: context, initialTime: _time);
     if (t != null) setState(() => _time = t);
   }
 
-  Future<void> _pickAudio() async {
-    final path = await AudioService.pickAudioFile();
-    if (path != null) {
-      setState(() => _audioPath = path);
+  Future<void> _pickSound() async {
+    try {
+      final r = await FilePicker.platform.pickFiles(type: FileType.audio);
+      if (r == null || r.files.single.path == null) return;
+      final src = File(r.files.single.path!);
+      // انسخه لمكان دائم عشان المكتبة تقدر توصل له
+      final dir = await getApplicationDocumentsDirectory();
+      final ext = r.files.single.extension ?? 'mp3';
+      final dest = File(
+          '${dir.path}/alarm_${DateTime.now().millisecondsSinceEpoch}.$ext');
+      await src.copy(dest.path);
+      setState(() => _soundPath = dest.path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم اختيار الصوت ✅')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في اختيار الملف: $e')),
+        );
+      }
     }
   }
 
   Future<void> _save() async {
-    if (_titleCtrl.text.trim().isEmpty) {
+    final title = _titleCtrl.text.trim();
+    if (title.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('اكتب اسم الموعد')));
+        const SnackBar(content: Text('اكتب اسم الموعد')),
+      );
       return;
     }
-    final a = Appointment(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: _titleCtrl.text.trim(),
-      hour: _time.hour, minute: _time.minute,
-      audioPath: _audioPath, repeatType: _repeat, selectedDays: _days,
+    final dt = DateTime(
+      _date.year,
+      _date.month,
+      _date.day,
+      _time.hour,
+      _time.minute,
     );
-    final list = StorageService.getAppointments();
-    list.add(a);
-    await StorageService.saveAppointments(list);
-    await NotificationService.scheduleAppointment(a);
-    if (mounted) Navigator.pop(context);
+    if (dt.isBefore(DateTime.now())) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('الوقت ده فات! اختار وقت في المستقبل')),
+      );
+      return;
+    }
+
+    final state = context.read<AppState>();
+    if (widget.existing == null) {
+      final a = Appointment(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        title: title,
+        note: _noteCtrl.text.trim(),
+        dateTime: dt,
+        soundPath: _soundPath,
+      );
+      await state.addAppointment(a);
+    } else {
+      final a = widget.existing!;
+      a.title = title;
+      a.note = _noteCtrl.text.trim();
+      a.dateTime = dt;
+      a.soundPath = _soundPath;
+      await state.updateAppointment(a);
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(widget.existing == null
+                ? 'تم حفظ الموعد ✅'
+                : 'تم تعديل الموعد ✅')),
+      );
+      Navigator.pop(context);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isEdit = widget.existing != null;
     return Scaffold(
-      appBar: AppBar(title: const Text('➕ إضافة موعد')),
+      appBar: AppBar(title: Text(isEdit ? 'تعديل موعد' : 'موعد جديد')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('اسم الموعد', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
           TextField(
             controller: _titleCtrl,
-            decoration: const InputDecoration(hintText: 'مثال: يوسف - رياضة'),
-          ),
-          const SizedBox(height: 20),
-          const Text('الوقت', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.access_time, color: AppColors.primary),
-              title: Text(_time.format(context)),
-              trailing: const Icon(Icons.edit),
-              onTap: _pickTime,
+            decoration: const InputDecoration(
+              labelText: 'اسم الموعد',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.title),
             ),
           ),
-          const SizedBox(height: 20),
-          const Text('التكرار', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          RadioListTile<RepeatType>(
-            value: RepeatType.once, groupValue: _repeat,
-            title: const Text('مرة واحدة'),
-            onChanged: (v) => setState(() => _repeat = v!)),
-          RadioListTile<RepeatType>(
-            value: RepeatType.daily, groupValue: _repeat,
-            title: const Text('كل يوم'),
-            onChanged: (v) => setState(() => _repeat = v!)),
-          RadioListTile<RepeatType>(
-            value: RepeatType.specificDays, groupValue: _repeat,
-            title: const Text('أيام محددة'),
-            onChanged: (v) => setState(() => _repeat = v!)),
-          if (_repeat == RepeatType.specificDays) ...[
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8, runSpacing: 8,
-              children: List.generate(7, (i) {
-                final selected = _days.contains(i);
-                return FilterChip(
-                  label: Text(_dayNames[i]),
-                  selected: selected,
-                  onSelected: (v) {
-                    setState(() { v ? _days.add(i) : _days.remove(i); });
-                  },
-                );
-              }),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _noteCtrl,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: 'ملاحظة (اختياري)',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.notes),
             ),
-          ],
-          const SizedBox(height: 20),
-          const Text('الصوت', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
+          ),
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _pickAudio,
-                  icon: const Icon(Icons.audio_file),
-                  label: const Text('اختيار ملف صوتي'),
+                child: OutlinedButton.icon(
+                  onPressed: _pickDate,
+                  icon: const Icon(Icons.calendar_today),
+                  label: Text(DateFormat('yyyy/MM/dd').format(_date)),
                 ),
               ),
               const SizedBox(width: 8),
-              if (_audioPath.isNotEmpty)
-                IconButton(
-                  icon: const Icon(Icons.play_arrow, color: AppColors.success, size: 32),
-                  onPressed: () { AudioService.play(_audioPath); },
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _pickTime,
+                  icon: const Icon(Icons.access_time),
+                  label: Text(_time.format(context)),
                 ),
+              ),
             ],
           ),
-          const SizedBox(height: 30),
-          ElevatedButton.icon(
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.music_note),
+              title: const Text('صوت المنبه'),
+              subtitle: Text(
+                _soundPath == null
+                    ? 'افتراضي (نغمة النظام)'
+                    : _soundPath!.split('/').last,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.folder_open),
+                onPressed: _pickSound,
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          FilledButton.icon(
             onPressed: _save,
             icon: const Icon(Icons.save),
-            label: const Text('حفظ الموعد'),
-            style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+            label: Text(isEdit ? 'حفظ التعديلات' : 'حفظ الموعد'),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(52),
+            ),
           ),
         ],
       ),
@@ -711,378 +692,206 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  Alarm Screen (شاشة المنبه)
+// ═══════════════════════════════════════════════════════════════
+class AlarmScreen extends StatelessWidget {
+  final Appointment appointment;
+  const AlarmScreen({super.key, required this.appointment});
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        backgroundColor: Colors.red.shade900,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.alarm, size: 140, color: Colors.white),
+                const SizedBox(height: 32),
+                const Text('⏰ وقت الموعد',
+                    style: TextStyle(color: Colors.white70, fontSize: 18)),
+                const SizedBox(height: 12),
+                Text(
+                  appointment.title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 36,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (appointment.note.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    appointment.note,
+                    textAlign: TextAlign.center,
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 18),
+                  ),
+                ],
+                const SizedBox(height: 24),
+                Text(
+                  DateFormat('hh:mm a').format(appointment.dateTime),
+                  style: const TextStyle(color: Colors.white, fontSize: 22),
+                ),
+                const Spacer(),
+                SizedBox(
+                  width: double.infinity,
+                  height: 70,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      // إيقاف الصوت عن طريق مكتبة alarm
+                      await Alarm.stop(appointment.id.hashCode & 0x7fffffff);
+                      if (context.mounted) {
+                        Navigator.of(context).pop();
+                      }
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.red.shade900,
+                    ),
+                    icon: const Icon(Icons.stop_circle, size: 32),
+                    label: const Text('إيقاف',
+                        style: TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Pomodoro Screen
+// ═══════════════════════════════════════════════════════════════
 class PomodoroScreen extends StatefulWidget {
   const PomodoroScreen({super.key});
+
   @override
   State<PomodoroScreen> createState() => _PomodoroScreenState();
 }
 
 class _PomodoroScreenState extends State<PomodoroScreen> {
-  PomodoroSettings _settings = PomodoroSettings();
-  Timer? _timer;
-  int _secondsLeft = 0;
-  int _workMinutes = 20;
-  int _breakMinutes = 5;
-  bool _isWorking = false;
-  bool _isRunning = false;
-  bool _isBreak = false;
-  int _sessionCount = 0;
-  DateTime? _sessionStart;
+  static const studyMin = 25;
+  static const breakMin = 5;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadSettings();
-  }
+  int _remaining = studyMin * 60;
+  bool _isStudy = true;
+  bool _running = false;
+  Timer? _t;
 
-  void _loadSettings() {
-    final s = StorageService.getPomodoroSettings();
-    setState(() {
-      _settings = s;
-      _workMinutes = s.workMinutes;
-      _breakMinutes = s.breakMinutes;
-      _secondsLeft = _workMinutes * 60;
-    });
-  }
-
-  void _startWork() {
-    setState(() {
-      _isWorking = true;
-      _isRunning = true;
-      _isBreak = false;
-      _secondsLeft = _workMinutes * 60;
-      _sessionStart = DateTime.now();
-    });
-    if (_settings.startAudioPath.isNotEmpty) {
-      AudioService.play(_settings.startAudioPath, loop: true);
-    }
-    _startTimer();
-  }
-
-  void _startBreak() {
-    setState(() {
-      _isBreak = true;
-      _isRunning = true;
-      _secondsLeft = _breakMinutes * 60;
-    });
-    if (_settings.breakAudioPath.isNotEmpty) {
-      AudioService.play(_settings.breakAudioPath, loop: true);
-    }
-    _startTimer();
-  }
-
-  void _startTimer() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (_secondsLeft <= 1) {
-        t.cancel();
-        _onTimerEnd();
+  void _start() {
+    if (_running) return;
+    setState(() => _running = true);
+    _t = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_remaining <= 0) {
+        _switch();
       } else {
-        setState(() => _secondsLeft--);
+        setState(() => _remaining--);
       }
     });
-  }
-
-  Future<void> _onTimerEnd() async {
-    await AudioService.stop();
-    if (!_isBreak && _sessionStart != null) {
-      final now = DateTime.now();
-      final dur = now.difference(_sessionStart!).inMinutes;
-      if (dur > 0) {
-        await StorageService.addSession(StudySession(
-          id: now.millisecondsSinceEpoch.toString(),
-          startTime: _sessionStart!,
-          endTime: now,
-          durationMinutes: dur,
-        ));
-      }
-      _sessionCount++;
-    }
-    if (_isBreak) {
-      _startWork();
-    } else {
-      _startBreak();
-    }
   }
 
   void _pause() {
-    _timer?.cancel();
-    AudioService.stop();
-    setState(() => _isRunning = false);
+    _t?.cancel();
+    setState(() => _running = false);
   }
 
-  void _resume() {
-    setState(() => _isRunning = true);
-    _startTimer();
-  }
-
-  Future<void> _stop() async {
-    _timer?.cancel();
-    await AudioService.stop();
+  void _reset() {
+    _t?.cancel();
     setState(() {
-      _isWorking = false;
-      _isRunning = false;
-      _isBreak = false;
-      _secondsLeft = _workMinutes * 60;
+      _running = false;
+      _isStudy = true;
+      _remaining = studyMin * 60;
     });
   }
 
-  String _formatTime(int sec) {
-    final m = (sec ~/ 60).toString().padLeft(2, '0');
-    final s = (sec % 60).toString().padLeft(2, '0');
-    return '$m:$s';
+  Future<void> _switch() async {
+    _t?.cancel();
+    if (_isStudy) {
+      await context.read<AppState>().addSession(studyMin);
+    }
+    setState(() {
+      _isStudy = !_isStudy;
+      _remaining = (_isStudy ? studyMin : breakMin) * 60;
+      _running = false;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_isStudy ? 'ابدأ المذاكرة!' : 'وقت الراحة!')),
+      );
+    }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
-    AudioService.stop();
+    _t?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final m = (_remaining ~/ 60).toString().padLeft(2, '0');
+    final s = (_remaining % 60).toString().padLeft(2, '0');
+    final color = _isStudy ? Colors.teal : Colors.orange;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('⏱️ المذاكرة'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () async {
-              await Navigator.push(context,
-                  MaterialPageRoute(builder: (_) =>
-                      PomodoroSettingsScreen(settings: _settings)));
-              _loadSettings();
-            },
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
+      appBar: AppBar(title: const Text('بومودورو')),
+      body: Center(
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    _infoColumn('الجلسات', '$_sessionCount'),
-                    _infoColumn('مذاكرة', '$_workMinutes د'),
-                    _infoColumn('راحة', '$_breakMinutes د'),
-                  ],
+            Text(
+              _isStudy ? '📚 وقت المذاكرة' : '☕ وقت الراحة',
+              style: TextStyle(
+                  fontSize: 24, fontWeight: FontWeight.bold, color: color),
+            ),
+            const SizedBox(height: 24),
+            Container(
+              width: 240,
+              height: 240,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: color, width: 8),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                '$m:$s',
+                style: TextStyle(
+                  fontSize: 64,
+                  fontWeight: FontWeight.bold,
+                  color: color,
                 ),
               ),
             ),
-            const SizedBox(height: 30),
-            Expanded(
-              child: Center(
-                child: Container(
-                  width: 280, height: 280,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _isBreak
-                        ? AppColors.pomodoroBreak.withOpacity(0.1)
-                        : AppColors.pomodoroWork.withOpacity(0.1),
-                    border: Border.all(
-                      color: _isBreak ? AppColors.pomodoroBreak : AppColors.pomodoroWork,
-                      width: 6,
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        _isBreak ? Icons.coffee : Icons.menu_book,
-                        size: 50,
-                        color: _isBreak ? AppColors.pomodoroBreak : AppColors.pomodoroWork,
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        _isBreak ? 'راحة' : 'مذاكرة',
-                        style: TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.bold,
-                          color: _isBreak ? AppColors.pomodoroBreak : AppColors.pomodoroWork,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        _formatTime(_secondsLeft),
-                        style: TextStyle(
-                          fontSize: 56, fontWeight: FontWeight.bold,
-                          color: isDark ? Colors.white : Colors.black87,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            if (!_isWorking)
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _startWork,
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('ابدأ المذاكرة'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    backgroundColor: AppColors.pomodoroWork,
-                  ),
-                ),
-              )
-            else
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _isRunning ? _pause : _resume,
-                      icon: Icon(_isRunning ? Icons.pause : Icons.play_arrow),
-                      label: Text(_isRunning ? 'إيقاف مؤقت' : 'استكمال'),
-                      style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16)),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _stop,
-                      icon: const Icon(Icons.stop),
-                      label: const Text('إنهاء'),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        backgroundColor: AppColors.error,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            const SizedBox(height: 20),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _infoColumn(String label, String value) {
-    return Column(
-      children: [
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
-        const SizedBox(height: 4),
-        Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-      ],
-    );
-  }
-}
-
-class PomodoroSettingsScreen extends StatefulWidget {
-  final PomodoroSettings settings;
-  const PomodoroSettingsScreen({super.key, required this.settings});
-  @override
-  State<PomodoroSettingsScreen> createState() => _PomodoroSettingsScreenState();
-}
-
-class _PomodoroSettingsScreenState extends State<PomodoroSettingsScreen> {
-  late int _work;
-  late int _break;
-  late String _startAudio;
-  late String _breakAudio;
-
-  @override
-  void initState() {
-    super.initState();
-    _work = widget.settings.workMinutes;
-    _break = widget.settings.breakMinutes;
-    _startAudio = widget.settings.startAudioPath;
-    _breakAudio = widget.settings.breakAudioPath;
-  }
-
-  Future<void> _pickAudio(String target) async {
-    final path = await AudioService.pickAudioFile();
-    if (path != null) {
-      setState(() {
-        if (target == 'start') _startAudio = path;
-        if (target == 'break') _breakAudio = path;
-      });
-    }
-  }
-
-  Future<void> _save() async {
-    final s = PomodoroSettings(
-      workMinutes: _work, breakMinutes: _break,
-      startAudioPath: _startAudio, breakAudioPath: _breakAudio,
-    );
-    await StorageService.savePomodoroSettings(s);
-    if (mounted) Navigator.pop(context);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('إعدادات المذاكرة')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text('وقت المذاكرة (بالدقايق)',
-              style: TextStyle(fontWeight: FontWeight.bold)),
-          Slider(
-            value: _work.toDouble(), min: 5, max: 60, divisions: 11,
-            label: '$_work دقيقة',
-            onChanged: (v) => setState(() => _work = v.round()),
-          ),
-          Center(child: Text('$_work دقيقة', style: const TextStyle(fontSize: 18))),
-          const SizedBox(height: 20),
-          const Text('وقت الراحة (بالدقايق)',
-              style: TextStyle(fontWeight: FontWeight.bold)),
-          Slider(
-            value: _break.toDouble(), min: 1, max: 30, divisions: 29,
-            label: '$_break دقيقة',
-            onChanged: (v) => setState(() => _break = v.round()),
-          ),
-          Center(child: Text('$_break دقيقة', style: const TextStyle(fontSize: 18))),
-          const SizedBox(height: 30),
-          _audioTile('🔊 صوت "قوم ذاكر"', _startAudio, 'start'),
-          const SizedBox(height: 12),
-          _audioTile('🔊 صوت "راحة"', _breakAudio, 'break'),
-          const SizedBox(height: 30),
-          ElevatedButton.icon(
-            onPressed: _save,
-            icon: const Icon(Icons.save),
-            label: const Text('حفظ الإعدادات'),
-            style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _audioTile(String label, String path, String target) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
+            const SizedBox(height: 32),
             Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => _pickAudio(target),
-                    icon: const Icon(Icons.audio_file),
-                    label: const Text('اختيار ملف صوتي'),
+                FilledButton.icon(
+                  onPressed: _running ? _pause : _start,
+                  icon: Icon(_running ? Icons.pause : Icons.play_arrow),
+                  label: Text(_running ? 'إيقاف مؤقت' : 'ابدأ'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: color,
+                    minimumSize: const Size(140, 52),
                   ),
                 ),
-                if (path.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.play_arrow, color: AppColors.success, size: 32),
-                    onPressed: () => AudioService.play(path),
-                  ),
-                ],
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  onPressed: _reset,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('إعادة'),
+                ),
               ],
             ),
           ],
@@ -1091,168 +900,141 @@ class _PomodoroSettingsScreenState extends State<PomodoroSettingsScreen> {
     );
   }
 }
-// ═══════════════════════════════════════════════════════
-//              شاشة الإحصائيات
-// ═══════════════════════════════════════════════════════
 
-class StatisticsScreen extends StatefulWidget {
-  const StatisticsScreen({super.key});
-  @override
-  State<StatisticsScreen> createState() => _StatisticsScreenState();
-}
-
-class _StatisticsScreenState extends State<StatisticsScreen> {
-  late StudyStatistics _stats;
-
-  @override
-  void initState() {
-    super.initState();
-    _stats = StorageService.getStatistics();
-  }
+// ═══════════════════════════════════════════════════════════════
+//  Stats Screen
+// ═══════════════════════════════════════════════════════════════
+class StatsScreen extends StatelessWidget {
+  const StatsScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final s = context.watch<AppState>().sessions;
+    final totalMin = s.fold<int>(0, (a, b) => a + b.minutes);
+    final today = DateTime.now();
+    final todayMin = s
+        .where((x) =>
+            x.date.year == today.year &&
+            x.date.month == today.month &&
+            x.date.day == today.day)
+        .fold<int>(0, (a, b) => a + b.minutes);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('📊 الإحصائيات')),
+      appBar: AppBar(title: const Text('الإحصائيات')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _statCard('📅 النهارده', _stats.todayFormatted, AppColors.primary),
-          const SizedBox(height: 12),
-          _statCard('📆 الأسبوع', _stats.weekFormatted, AppColors.success),
-          const SizedBox(height: 12),
-          _statCard('🗓️ الشهر', _stats.monthFormatted, AppColors.pomodoroWork),
-          const SizedBox(height: 12),
-          _statCard('📚 الإجمالي', _stats.totalFormatted, AppColors.accent),
-          const SizedBox(height: 20),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('⏱️ عدد الجلسات',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text('${_stats.totalSessions}',
-                          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const Divider(),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('📈 متوسط الجلسة',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text(
-                        _stats.totalSessions == 0
-                            ? '0 دقيقة'
-                            : StudyStatistics.formatMinutes(
-                                _stats.totalMinutes ~/ _stats.totalSessions),
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                ],
+          Row(
+            children: [
+              Expanded(
+                child: _statCard('اليوم', '$todayMin دقيقة', Colors.teal),
               ),
-            ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _statCard('إجمالي', '$totalMin دقيقة', Colors.indigo),
+              ),
+            ],
           ),
+          const SizedBox(height: 12),
+          _statCard('عدد الجلسات', '${s.length}', Colors.orange),
+          const SizedBox(height: 24),
+          const Text('آخر الجلسات',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const Divider(),
+          if (s.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Text('مفيش جلسات لسه',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey)),
+            )
+          else
+            ...s.reversed.take(20).map((x) => ListTile(
+                  leading: const Icon(Icons.check_circle, color: Colors.teal),
+                  title: Text('${x.minutes} دقيقة'),
+                  subtitle:
+                      Text(DateFormat('yyyy/MM/dd - hh:mm a').format(x.date)),
+                )),
         ],
       ),
     );
   }
 
-  Widget _statCard(String label, String value, Color color) {
-    return Card(
-      child: Padding(
+  Widget _statCard(String label, String value, Color c) => Container(
         padding: const EdgeInsets.all(16),
-        child: Row(
+        decoration: BoxDecoration(
+          color: c.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: c.withOpacity(0.4)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: 50, height: 50,
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12)),
-              child: Icon(Icons.bar_chart, color: color),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label, style: const TextStyle(color: Colors.grey, fontSize: 14)),
-                  const SizedBox(height: 4),
-                  Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ),
+            Text(label, style: const TextStyle(fontSize: 14)),
+            const SizedBox(height: 8),
+            Text(value,
+                style: TextStyle(
+                    fontSize: 22, fontWeight: FontWeight.bold, color: c)),
           ],
         ),
-      ),
-    );
-  }
+      );
 }
 
-// ═══════════════════════════════════════════════════════
-//              شاشة الإعدادات
-// ═══════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════════════════
+//  Settings Screen
+// ═══════════════════════════════════════════════════════════════
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
+    final state = context.watch<AppState>();
     return Scaffold(
-      appBar: AppBar(title: const Text('⚙️ الإعدادات')),
+      appBar: AppBar(title: const Text('الإعدادات')),
       body: ListView(
         children: [
           SwitchListTile(
             secondary: const Icon(Icons.dark_mode),
             title: const Text('الوضع الليلي'),
-            value: themeProvider.isDarkMode,
-            onChanged: (_) => themeProvider.toggleTheme(),
+            value: state.isDark,
+            onChanged: (_) => context.read<AppState>().toggleDark(),
           ),
           const Divider(),
           ListTile(
             leading: const Icon(Icons.info_outline),
             title: const Text('عن التطبيق'),
-            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {
-              Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const AboutScreen()));
-            },
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const AboutScreen())),
           ),
           const Divider(),
           ListTile(
-            leading: const Icon(Icons.delete_forever, color: AppColors.error),
+            leading: const Icon(Icons.delete_forever, color: Colors.red),
             title: const Text('مسح كل البيانات',
-                style: TextStyle(color: AppColors.error)),
+                style: TextStyle(color: Colors.red)),
             onTap: () async {
-              final confirm = await showDialog<bool>(
+              final ok = await showDialog<bool>(
                 context: context,
                 builder: (_) => AlertDialog(
-                  title: const Text('تحذير'),
-                  content: const Text('هيتم مسح كل المواعيد والجلسات. متأكد؟'),
+                  title: const Text('مسح البيانات'),
+                  content:
+                      const Text('هيتم مسح كل المواعيد والإحصائيات. متأكد؟'),
                   actions: [
                     TextButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      child: const Text('إلغاء'),
-                    ),
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('إلغاء')),
                     TextButton(
-                      onPressed: () => Navigator.pop(context, true),
-                      child: const Text('مسح', style: TextStyle(color: AppColors.error)),
-                    ),
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('مسح',
+                            style: TextStyle(color: Colors.red))),
                   ],
                 ),
               );
-              if (confirm == true) {
-                await StorageService.clearAll();
-                await NotificationService.cancelAll();
+              if (ok == true) {
+                await context.read<AppState>().clearAll();
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('تم مسح كل البيانات')));
+                    const SnackBar(content: Text('تم مسح البيانات ✅')),
+                  );
                 }
               }
             },
@@ -1263,51 +1045,43 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
-// ═══════════════════════════════════════════════════════
-//              شاشة عن التطبيق
-// ═══════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════════════════
+//  About Screen
+// ═══════════════════════════════════════════════════════════════
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('ℹ️ عن التطبيق')),
-      body: Center(
+      appBar: AppBar(title: const Text('عن التطبيق')),
+      body: const Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: EdgeInsets.all(24),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                width: 120, height: 120,
-                decoration: BoxDecoration(
-                  color: AppColors.primary,
-                  borderRadius: BorderRadius.circular(30)),
-                child: const Icon(Icons.notifications_active,
-                    size: 70, color: Colors.white),
-              ),
-              const SizedBox(height: 24),
-              const Text('مواعيد',
-                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              const Text('الإصدار 1.0.0', style: TextStyle(color: Colors.grey)),
-              const SizedBox(height: 40),
-              const Divider(),
-              const SizedBox(height: 20),
-              const Text('إعداد', style: TextStyle(color: Colors.grey)),
-              const SizedBox(height: 8),
-              const Text(
-                'المهندس يوسف أحمد مصطفى',
-                style: TextStyle(
-                  fontSize: 20, fontWeight: FontWeight.bold,
-                  color: AppColors.primary),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 40),
-              const Text('© 2026 - جميع الحقوق محفوظة',
-                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+              Icon(Icons.alarm, size: 100, color: Colors.teal),
+              SizedBox(height: 24),
+              Text('تطبيق مواعيد',
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              Text('منبه المذاكرة والبومودورو',
+                  style: TextStyle(fontSize: 16, color: Colors.grey)),
+              SizedBox(height: 32),
+              Divider(),
+              SizedBox(height: 16),
+              Text('تطوير',
+                  style: TextStyle(color: Colors.grey, fontSize: 14)),
+              SizedBox(height: 8),
+              Text('المهندس يوسف أحمد مصطفى',
+                  style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.teal)),
+              SizedBox(height: 8),
+              Text('الإصدار 1.0.0',
+                  style: TextStyle(color: Colors.grey, fontSize: 13)),
             ],
           ),
         ),
