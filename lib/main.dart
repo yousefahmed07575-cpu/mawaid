@@ -21,6 +21,37 @@ import 'package:shared_preferences/shared_preferences.dart';
 final GlobalKey<NavigatorState> navKey = GlobalKey<NavigatorState>();
 
 // ═══════════════════════════════════════════════════════════════
+//  Helpers
+// ═══════════════════════════════════════════════════════════════
+int generateAlarmId(String id) {
+  int hash = 0;
+  for (int i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.codeUnitAt(i)) & 0x7fffffff;
+  }
+  return hash;
+}
+
+String weekdayNameAr(int w) {
+  const names = {
+    1: 'الإثنين',
+    2: 'الثلاثاء',
+    3: 'الأربعاء',
+    4: 'الخميس',
+    5: 'الجمعة',
+    6: 'السبت',
+    7: 'الأحد',
+  };
+  return names[w] ?? '';
+}
+
+const List<int> weekDaysOrder = [6, 7, 1, 2, 3, 4, 5];
+
+// ═══════════════════════════════════════════════════════════════
+//  Recurrence Type
+// ═══════════════════════════════════════════════════════════════
+enum RecurrenceType { once, daily, weekly }
+
+// ═══════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════
 Future<void> main() async {
@@ -43,6 +74,8 @@ class Appointment {
   String note;
   DateTime dateTime;
   String? soundPath;
+  RecurrenceType recurrence;
+  List<int> weekdays;
 
   Appointment({
     required this.id,
@@ -50,7 +83,9 @@ class Appointment {
     required this.note,
     required this.dateTime,
     this.soundPath,
-  });
+    this.recurrence = RecurrenceType.once,
+    List<int>? weekdays,
+  }) : weekdays = weekdays ?? [];
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -58,6 +93,8 @@ class Appointment {
         'note': note,
         'dateTime': dateTime.toIso8601String(),
         'soundPath': soundPath,
+        'recurrence': recurrence.name,
+        'weekdays': weekdays,
       };
 
   factory Appointment.fromJson(Map<String, dynamic> j) => Appointment(
@@ -66,7 +103,28 @@ class Appointment {
         note: (j['note'] ?? '') as String,
         dateTime: DateTime.parse(j['dateTime'] as String),
         soundPath: j['soundPath'] as String?,
+        recurrence: RecurrenceType.values.firstWhere(
+          (e) => e.name == (j['recurrence'] ?? 'once'),
+          orElse: () => RecurrenceType.once,
+        ),
+        weekdays: (j['weekdays'] as List?)?.cast<int>() ?? [],
       );
+
+  String recurrenceLabel() {
+    switch (recurrence) {
+      case RecurrenceType.once:
+        return DateFormat('EEEE d MMM - hh:mm a', 'ar').format(dateTime);
+      case RecurrenceType.daily:
+        return 'كل يوم - ${DateFormat('hh:mm a').format(dateTime)}';
+      case RecurrenceType.weekly:
+        if (weekdays.isEmpty) return 'أيام محددة';
+        final days = weekDaysOrder
+            .where((w) => weekdays.contains(w))
+            .map(weekdayNameAr)
+            .join(' • ');
+        return '$days - ${DateFormat('hh:mm a').format(dateTime)}';
+    }
+  }
 }
 
 class StudySession {
@@ -90,13 +148,54 @@ class AlarmService {
   AlarmService._();
   static final AlarmService I = AlarmService._();
 
-  int _generateId(String appointmentId) {
-    return appointmentId.hashCode & 0x7fffffff;
+  /// حساب الوقت الجاي للمنبه حسب نوع التكرار
+  DateTime calculateNextTime(Appointment a, {DateTime? from}) {
+    final now = from ?? DateTime.now();
+
+    if (a.recurrence == RecurrenceType.once) {
+      return a.dateTime;
+    }
+
+    final hour = a.dateTime.hour;
+    final minute = a.dateTime.minute;
+
+    if (a.recurrence == RecurrenceType.daily) {
+      var candidate = DateTime(now.year, now.month, now.day, hour, minute, 0);
+      if (!candidate.isAfter(now)) {
+        candidate = candidate.add(const Duration(days: 1));
+      }
+      return candidate;
+    }
+
+    // weekly
+    if (a.weekdays.isEmpty) return a.dateTime;
+    for (int i = 0; i < 8; i++) {
+      final checkDate = now.add(Duration(days: i));
+      if (a.weekdays.contains(checkDate.weekday)) {
+        final candidate = DateTime(
+          checkDate.year,
+          checkDate.month,
+          checkDate.day,
+          hour,
+          minute,
+          0,
+        );
+        if (candidate.isAfter(now)) return candidate;
+      }
+    }
+    return now.add(const Duration(days: 7));
   }
 
   /// جدولة منبه جديد
   Future<void> schedule(Appointment a) async {
-    final alarmId = _generateId(a.id);
+    final alarmId = generateAlarmId(a.id);
+    final nextTime = calculateNextTime(a);
+
+    // لو الوقت فات ومرة واحدة فقط، متجدولش
+    if (nextTime.isBefore(DateTime.now()) &&
+        a.recurrence == RecurrenceType.once) {
+      return;
+    }
 
     // الصوت: لو موجود ملف مخصص استخدمه، وإلا استخدم صوت المنبه الافتراضي
     String soundPath;
@@ -108,7 +207,7 @@ class AlarmService {
 
     final settings = AlarmSettings(
       id: alarmId,
-      dateTime: a.dateTime,
+      dateTime: nextTime,
       assetAudioPath: soundPath,
       loopAudio: true,
       vibrate: true,
@@ -130,7 +229,7 @@ class AlarmService {
 
   /// إلغاء منبه
   Future<void> cancel(String appointmentId) async {
-    final alarmId = _generateId(appointmentId);
+    final alarmId = generateAlarmId(appointmentId);
     await Alarm.stop(alarmId);
   }
 
@@ -144,13 +243,14 @@ class AlarmService {
 //  App State
 // ═══════════════════════════════════════════════════════════════
 class AppState extends ChangeNotifier {
-  static const _kAppts = 'appointments_v3';
-  static const _kSessions = 'sessions_v3';
-  static const _kDark = 'dark_mode_v3';
+  static const _kAppts = 'appointments_v5';
+  static const _kSessions = 'sessions_v5';
+  static const _kDark = 'dark_mode_v5';
 
   final List<Appointment> appointments = [];
   final List<StudySession> sessions = [];
   bool isDark = false;
+  bool loaded = false;
 
   StreamSubscription? _alarmSub;
 
@@ -185,17 +285,19 @@ class AppState extends ChangeNotifier {
     });
 
     for (final a in appointments) {
-      if (a.dateTime.isAfter(DateTime.now())) {
+      if (a.recurrence != RecurrenceType.once ||
+          a.dateTime.isAfter(DateTime.now())) {
         await AlarmService.I.schedule(a);
       }
     }
 
+    loaded = true;
     notifyListeners();
   }
 
   void _onAlarmRing(AlarmSettings settings) {
     final appt = appointments.firstWhere(
-      (a) => (a.id.hashCode & 0x7fffffff) == settings.id,
+      (a) => generateAlarmId(a.id) == settings.id,
       orElse: () => Appointment(
         id: settings.id.toString(),
         title: 'موعد',
@@ -209,6 +311,15 @@ class AppState extends ChangeNotifier {
         builder: (_) => AlarmScreen(appointment: appt),
       ),
     );
+
+    // إعادة جدولة المنبه لو متكرر
+    if (appt.recurrence != RecurrenceType.once) {
+      Future.delayed(const Duration(seconds: 3), () {
+        if (appointments.any((x) => x.id == appt.id)) {
+          AlarmService.I.schedule(appt);
+        }
+      });
+    }
   }
 
   Future<void> _persistAppts() async {
@@ -249,6 +360,16 @@ class AppState extends ChangeNotifier {
   Future<void> deleteAppointment(String id) async {
     appointments.removeWhere((x) => x.id == id);
     await AlarmService.I.cancel(id);
+    await _persistAppts();
+    notifyListeners();
+  }
+
+  Future<void> clearAppointments() async {
+    final ids = appointments.map((a) => a.id).toList();
+    for (final id in ids) {
+      await AlarmService.I.cancel(id);
+    }
+    appointments.clear();
     await _persistAppts();
     notifyListeners();
   }
@@ -322,10 +443,12 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final appts = state.appointments;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('مواعيدي'),
+        title: const Text('مواعيدي',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
             icon: const Icon(Icons.timer_outlined),
@@ -345,113 +468,276 @@ class HomeScreen extends StatelessWidget {
             onPressed: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const SettingsScreen())),
           ),
+          if (appts.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete_sweep, color: Colors.red),
+              tooltip: 'مسح كل المواعيد',
+              onPressed: () => _confirmDeleteAll(context),
+            ),
         ],
       ),
-      body: appts.isEmpty
-          ? const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.alarm_off, size: 80, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text('مفيش مواعيد لسه',
-                      style: TextStyle(fontSize: 20, color: Colors.grey)),
-                  SizedBox(height: 8),
-                  Text('اضغط + عشان تضيف موعد',
-                      style: TextStyle(color: Colors.grey)),
-                ],
-              ),
-            )
-          : ListView.builder(
-              padding: const EdgeInsets.all(12),
-              itemCount: appts.length,
-              itemBuilder: (_, i) {
-                final a = appts[i];
-                final soon = a.dateTime.difference(DateTime.now()).inMinutes;
-                return Card(
-                  margin: const EdgeInsets.symmetric(vertical: 6),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: soon < 0
-                          ? Colors.grey
-                          : soon < 60
-                              ? Colors.red
-                              : Colors.teal,
-                      child: const Icon(Icons.alarm, color: Colors.white),
-                    ),
-                    title: Text(a.title,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 16)),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(DateFormat('EEEE d MMM - hh:mm a', 'ar')
-                            .format(a.dateTime)),
-                        if (a.note.isNotEmpty)
-                          Text(a.note,
-                              style: TextStyle(
-                                  color: Colors.grey.shade600, fontSize: 12)),
-                      ],
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.edit, color: Colors.blue),
-                          onPressed: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => AddAppointmentScreen(existing: a),
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () async {
-                            final ok = await showDialog<bool>(
-                              context: context,
-                              builder: (_) => AlertDialog(
-                                title: const Text('حذف الموعد'),
-                                content: Text('متأكد إنك عايز تحذف "${a.title}"؟'),
-                                actions: [
-                                  TextButton(
-                                      onPressed: () =>
-                                          Navigator.pop(context, false),
-                                      child: const Text('إلغاء')),
-                                  TextButton(
-                                      onPressed: () =>
-                                          Navigator.pop(context, true),
-                                      child: const Text('حذف',
-                                          style: TextStyle(color: Colors.red))),
-                                ],
-                              ),
-                            );
-                            if (ok == true) {
-                              await context
-                                  .read<AppState>()
-                                  .deleteAppointment(a.id);
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                      content: Text('تم حذف الموعد ✅')),
-                                );
-                              }
-                            }
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
+      body: !state.loaded
+          ? const Center(child: CircularProgressIndicator())
+          : appts.isEmpty
+              ? _buildEmptyState(isDark)
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
+                  itemCount: appts.length,
+                  itemBuilder: (_, i) => _appointmentCard(context, appts[i]),
+                ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => Navigator.push(context,
             MaterialPageRoute(builder: (_) => const AddAppointmentScreen())),
         icon: const Icon(Icons.add_alarm),
         label: const Text('إضافة موعد'),
+        backgroundColor: Colors.teal,
+        foregroundColor: Colors.white,
       ),
     );
+  }
+
+  Widget _buildEmptyState(bool isDark) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 140,
+              height: 140,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.teal.withOpacity(0.15),
+              ),
+              child: const Icon(Icons.alarm_add, size: 80, color: Colors.teal),
+            ),
+            const SizedBox(height: 24),
+            const Text('مفيش مواعيد لسه',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            Text(
+              'اضغط على زرار "إضافة موعد" عشان تبدأ',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  fontSize: 16,
+                  color: isDark ? Colors.white70 : Colors.black54),
+            ),
+            const SizedBox(height: 8),
+            Text('🎯 مواعيد • 🔁 تكرار • 🎵 صوت مخصص',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, color: Colors.teal.shade400)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _appointmentCard(BuildContext context, Appointment a) {
+    final isRecurring = a.recurrence != RecurrenceType.once;
+    final soon = a.dateTime.difference(DateTime.now()).inMinutes;
+
+    IconData icon;
+    Color circleColor;
+    if (isRecurring) {
+      icon = Icons.repeat;
+      circleColor = Colors.blue;
+    } else if (soon < 0) {
+      icon = Icons.alarm_off;
+      circleColor = Colors.grey;
+    } else if (soon < 60) {
+      icon = Icons.alarm;
+      circleColor = Colors.red;
+    } else {
+      icon = Icons.alarm;
+      circleColor = Colors.teal;
+    }
+
+    return Dismissible(
+      key: ValueKey(a.id),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.red,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Text('حذف',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18)),
+            SizedBox(width: 8),
+            Icon(Icons.delete, color: Colors.white, size: 32),
+          ],
+        ),
+      ),
+      confirmDismiss: (_) => _askDelete(context, a),
+      onDismissed: (_) async {
+        await context.read<AppState>().deleteAppointment(a.id);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('تم حذف "${a.title}" ✅')),
+          );
+        }
+      },
+      child: Card(
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        elevation: 2,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Column(
+            children: [
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                leading: CircleAvatar(
+                  backgroundColor: circleColor,
+                  radius: 26,
+                  child: Icon(icon, color: Colors.white, size: 26),
+                ),
+                title: Text(
+                  a.title,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 17),
+                ),
+                subtitle: Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.schedule,
+                              size: 14, color: Colors.grey),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(a.recurrenceLabel(),
+                                style: const TextStyle(fontSize: 13)),
+                          ),
+                        ],
+                      ),
+                      if (a.note.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(a.note,
+                            style: TextStyle(
+                                color: Colors.grey.shade600, fontSize: 12)),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => AddAppointmentScreen(existing: a),
+                        ),
+                      ),
+                      icon: const Icon(Icons.edit,
+                          color: Colors.blue, size: 20),
+                      label: const Text('تعديل',
+                          style: TextStyle(
+                              color: Colors.blue,
+                              fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                  Container(
+                      width: 1, height: 24, color: Colors.grey.shade300),
+                  Expanded(
+                    child: TextButton.icon(
+                      onPressed: () async {
+                        final ok = await _askDelete(context, a);
+                        if (ok && context.mounted) {
+                          await context
+                              .read<AppState>()
+                              .deleteAppointment(a.id);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                  content: Text('تم حذف "${a.title}" ✅')),
+                            );
+                          }
+                        }
+                      },
+                      icon: const Icon(Icons.delete,
+                          color: Colors.red, size: 20),
+                      label: const Text('حذف',
+                          style: TextStyle(
+                              color: Colors.red,
+                              fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<bool> _askDelete(BuildContext context, Appointment a) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('حذف الموعد'),
+        content: Text('متأكد إنك عايز تحذف "${a.title}"؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('حذف', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
+  }
+
+  Future<void> _confirmDeleteAll(BuildContext context) async {
+    final state = context.read<AppState>();
+    final count = state.appointments.length;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('مسح كل المواعيد'),
+        content: Text('متأكد إنك عايز تمسح كل المواعيد ($count)؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child:
+                const Text('مسح الكل', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && context.mounted) {
+      await context.read<AppState>().clearAppointments();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم مسح كل المواعيد ✅')),
+        );
+      }
+    }
   }
 }
 
@@ -472,20 +758,26 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
   DateTime _date = DateTime.now().add(const Duration(minutes: 5));
   TimeOfDay _time = TimeOfDay.now();
   String? _soundPath;
+  RecurrenceType _recurrence = RecurrenceType.once;
+  Set<int> _selectedWeekdays = {};
 
   @override
   void initState() {
     super.initState();
     if (widget.existing != null) {
-      _titleCtrl.text = widget.existing!.title;
-      _noteCtrl.text = widget.existing!.note;
-      _date = widget.existing!.dateTime;
-      _time = TimeOfDay.fromDateTime(widget.existing!.dateTime);
-      _soundPath = widget.existing!.soundPath;
+      final e = widget.existing!;
+      _titleCtrl.text = e.title;
+      _noteCtrl.text = e.note;
+      _date = e.dateTime;
+      _time = TimeOfDay.fromDateTime(e.dateTime);
+      _soundPath = e.soundPath;
+      _recurrence = e.recurrence;
+      _selectedWeekdays = e.weekdays.toSet();
     } else {
       final d = DateTime.now().add(const Duration(minutes: 5));
       _date = d;
       _time = TimeOfDay.fromDateTime(d);
+      _selectedWeekdays = {d.weekday};
     }
   }
 
@@ -539,11 +831,10 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
   Future<void> _save() async {
     final title = _titleCtrl.text.trim();
     if (title.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('اكتب اسم الموعد')),
-      );
+      _snack('اكتب اسم الموعد');
       return;
     }
+
     final dt = DateTime(
       _date.year,
       _date.month,
@@ -551,11 +842,21 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
       _time.hour,
       _time.minute,
     );
-    if (dt.isBefore(DateTime.now())) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('الوقت ده فات! اختار وقت في المستقبل')),
-      );
+
+    if (_recurrence == RecurrenceType.once && dt.isBefore(DateTime.now())) {
+      _snack('الوقت ده فات! اختار وقت في المستقبل');
       return;
+    }
+
+    if (_recurrence == RecurrenceType.weekly && _selectedWeekdays.isEmpty) {
+      _snack('اختار يوم واحد على الأقل من الأسبوع');
+      return;
+    }
+
+    DateTime savedDate = dt;
+    if (_recurrence != RecurrenceType.once &&
+        dt.isBefore(DateTime.now())) {
+      savedDate = dt.add(const Duration(days: 1));
     }
 
     final state = context.read<AppState>();
@@ -564,28 +865,33 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         title: title,
         note: _noteCtrl.text.trim(),
-        dateTime: dt,
+        dateTime: savedDate,
         soundPath: _soundPath,
+        recurrence: _recurrence,
+        weekdays: _selectedWeekdays.toList(),
       );
       await state.addAppointment(a);
     } else {
       final a = widget.existing!;
       a.title = title;
       a.note = _noteCtrl.text.trim();
-      a.dateTime = dt;
+      a.dateTime = savedDate;
       a.soundPath = _soundPath;
+      a.recurrence = _recurrence;
+      a.weekdays = _selectedWeekdays.toList();
       await state.updateAppointment(a);
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text(widget.existing == null
-                ? 'تم حفظ الموعد ✅'
-                : 'تم تعديل الموعد ✅')),
-      );
+      _snack(widget.existing == null
+          ? 'تم حفظ الموعد ✅'
+          : 'تم تعديل الموعد ✅');
       Navigator.pop(context);
     }
+  }
+
+  void _snack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -600,6 +906,7 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
             controller: _titleCtrl,
             decoration: const InputDecoration(
               labelText: 'اسم الموعد',
+              hintText: 'مثال: مذاكرة رياضيات',
               border: OutlineInputBorder(),
               prefixIcon: Icon(Icons.title),
             ),
@@ -614,30 +921,111 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
               prefixIcon: Icon(Icons.notes),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 20),
+          const Row(
+            children: [
+              Icon(Icons.repeat, color: Colors.teal),
+              SizedBox(width: 8),
+              Text('التكرار',
+                  style: TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('مرة واحدة'),
+                avatar: const Icon(Icons.event, size: 18),
+                selected: _recurrence == RecurrenceType.once,
+                onSelected: (_) =>
+                    setState(() => _recurrence = RecurrenceType.once),
+                selectedColor: Colors.teal.shade200,
+              ),
+              ChoiceChip(
+                label: const Text('كل يوم'),
+                avatar: const Icon(Icons.repeat, size: 18),
+                selected: _recurrence == RecurrenceType.daily,
+                onSelected: (_) =>
+                    setState(() => _recurrence = RecurrenceType.daily),
+                selectedColor: Colors.teal.shade200,
+              ),
+              ChoiceChip(
+                label: const Text('أيام محددة'),
+                avatar: const Icon(Icons.calendar_month, size: 18),
+                selected: _recurrence == RecurrenceType.weekly,
+                onSelected: (_) =>
+                    setState(() => _recurrence = RecurrenceType.weekly),
+                selectedColor: Colors.teal.shade200,
+              ),
+            ],
+          ),
+          if (_recurrence == RecurrenceType.weekly) ...[
+            const SizedBox(height: 16),
+            const Text('اختار الأيام:',
+                style: TextStyle(fontSize: 14, color: Colors.grey)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: weekDaysOrder.map((w) {
+                final selected = _selectedWeekdays.contains(w);
+                return FilterChip(
+                  label: Text(weekdayNameAr(w)),
+                  selected: selected,
+                  onSelected: (val) {
+                    setState(() {
+                      if (val) {
+                        _selectedWeekdays.add(w);
+                      } else {
+                        _selectedWeekdays.remove(w);
+                      }
+                    });
+                  },
+                  selectedColor: Colors.teal.shade200,
+                  checkmarkColor: Colors.teal.shade900,
+                );
+              }).toList(),
+            ),
+          ],
+          const SizedBox(height: 20),
+          const Divider(),
+          const SizedBox(height: 8),
+          if (_recurrence != RecurrenceType.once)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 6),
+              child: Text('الوقت',
+                  style: TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
           Row(
             children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _pickDate,
-                  icon: const Icon(Icons.calendar_today),
-                  label: Text(DateFormat('yyyy/MM/dd').format(_date)),
+              if (_recurrence == RecurrenceType.once)
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickDate,
+                    icon: const Icon(Icons.calendar_today, size: 18),
+                    label: Text(DateFormat('yyyy/MM/dd').format(_date)),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
+              if (_recurrence == RecurrenceType.once) const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: _pickTime,
-                  icon: const Icon(Icons.access_time),
+                  icon: const Icon(Icons.access_time, size: 18),
                   label: Text(_time.format(context)),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 20),
+          const Divider(),
+          const SizedBox(height: 8),
           Card(
             child: ListTile(
-              leading: const Icon(Icons.music_note),
+              leading: const Icon(Icons.music_note, color: Colors.teal),
               title: const Text('صوت المنبه'),
               subtitle: Text(
                 _soundPath == null
@@ -652,13 +1040,19 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 28),
           FilledButton.icon(
             onPressed: _save,
             icon: const Icon(Icons.save),
-            label: Text(isEdit ? 'حفظ التعديلات' : 'حفظ الموعد'),
+            label: Text(
+              isEdit ? 'حفظ التعديلات' : 'حفظ الموعد',
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
             style: FilledButton.styleFrom(
-              minimumSize: const Size.fromHeight(52),
+              minimumSize: const Size.fromHeight(56),
+              backgroundColor: Colors.teal,
+              foregroundColor: Colors.white,
             ),
           ),
         ],
@@ -711,7 +1105,7 @@ class AlarmScreen extends StatelessWidget {
                 ],
                 const SizedBox(height: 24),
                 Text(
-                  DateFormat('hh:mm a').format(appointment.dateTime),
+                  DateFormat('hh:mm a').format(DateTime.now()),
                   style: const TextStyle(color: Colors.white, fontSize: 22),
                 ),
                 const Spacer(),
@@ -720,8 +1114,7 @@ class AlarmScreen extends StatelessWidget {
                   height: 70,
                   child: FilledButton.icon(
                     onPressed: () async {
-                      await Alarm.stop(
-                          appointment.id.hashCode & 0x7fffffff);
+                      await Alarm.stop(generateAlarmId(appointment.id));
                       if (context.mounted) {
                         Navigator.of(context).pop();
                       }
@@ -925,10 +1318,11 @@ class StatsScreen extends StatelessWidget {
             )
           else
             ...s.reversed.take(20).map((x) => ListTile(
-                  leading: const Icon(Icons.check_circle, color: Colors.teal),
+                  leading:
+                      const Icon(Icons.check_circle, color: Colors.teal),
                   title: Text('${x.minutes} دقيقة'),
-                  subtitle:
-                      Text(DateFormat('yyyy/MM/dd - hh:mm a').format(x.date)),
+                  subtitle: Text(
+                      DateFormat('yyyy/MM/dd - hh:mm a').format(x.date)),
                 )),
         ],
       ),
@@ -1039,7 +1433,8 @@ class AboutScreen extends StatelessWidget {
               Icon(Icons.alarm, size: 100, color: Colors.teal),
               SizedBox(height: 24),
               Text('تطبيق مواعيد',
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                  style:
+                      TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
               SizedBox(height: 8),
               Text('منبه المذاكرة والبومودورو',
                   style: TextStyle(fontSize: 16, color: Colors.grey)),
@@ -1055,7 +1450,7 @@ class AboutScreen extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                       color: Colors.teal)),
               SizedBox(height: 8),
-              Text('الإصدار 1.0.0',
+              Text('الإصدار 1.1.0',
                   style: TextStyle(color: Colors.grey, fontSize: 13)),
             ],
           ),
