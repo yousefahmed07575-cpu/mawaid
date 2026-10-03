@@ -28,10 +28,14 @@ jobs:
       - name: Create Flutter project
         run: flutter create --org com.yousef --project-name mawaid temp_project
 
+      - name: Update minSdkVersion to 23
+        run: |
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' temp_project/android/app/build.gradle
+
       - name: Add permissions to AndroidManifest
         run: |
           MANIFEST="temp_project/android/app/src/main/AndroidManifest.xml"
-          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application|' $MANIFEST
+          sed -i 's|<application|<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application|' $MANIFEST
 
       - name: Copy our custom code
         run: |
@@ -48,4 +52,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mawaid-apk
-          path: temp_project/build/app/outputs/flutter-apk/app-release.apk no
+          path: temp_project/build/app/outputs/flutter-apk/app-release.apk

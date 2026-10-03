@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -10,7 +12,6 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
@@ -44,7 +45,7 @@ class MawaidApp extends StatelessWidget {
             themeMode: themeProvider.isDarkMode ? ThemeMode.dark : ThemeMode.light,
             locale: const Locale('ar', 'EG'),
             builder: (context, child) => Directionality(
-              textDirection: TextDirection.rtl,
+              textDirection: ui.TextDirection.rtl,
               child: child!,
             ),
             home: const SplashScreen(),
@@ -235,9 +236,6 @@ class StudyStatistics {
   String get monthFormatted => formatMinutes(monthMinutes);
   String get totalFormatted => formatMinutes(totalMinutes);
 }
-// ═══════════════════════════════════════════════════════
-//                    الخدمات
-// ═══════════════════════════════════════════════════════
 
 class StorageService {
   static late SharedPreferences _prefs;
@@ -354,6 +352,8 @@ class NotificationService {
         a.id.hashCode, 'موعد: ${a.title}', 'الوقت الآن ${a.time12String}',
         tz.TZDateTime.from(scheduled, tz.local), details,
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
       );
     }
   }
@@ -364,26 +364,25 @@ class NotificationService {
 }
 
 class AudioService {
-  static final AudioRecorder _recorder = AudioRecorder();
   static final AudioPlayer _player = AudioPlayer();
   static bool _isPlaying = false;
 
   static bool get isPlaying => _isPlaying;
 
-  static Future<bool> requestMicPermission() async {
-    final status = await Permission.microphone.request();
-    return status.isGranted;
+  static Future<String?> pickAudioFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.audio,
+        allowMultiple: false,
+      );
+      if (result != null && result.files.single.path != null) {
+        return result.files.single.path!;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
   }
-
-  static Future<String?> startRecording() async {
-    if (!await requestMicPermission()) return null;
-    final dir = await getApplicationDocumentsDirectory();
-    final path = '${dir.path}/rec_${DateTime.now().millisecondsSinceEpoch}.m4a';
-    await _recorder.start(const RecordConfig(), path: path);
-    return path;
-  }
-
-  static Future<String?> stopRecording() async => await _recorder.stop();
 
   static Future<void> play(String path, {bool loop = false}) async {
     if (path.isEmpty) return;
@@ -398,7 +397,6 @@ class AudioService {
     await _player.stop();
   }
 }
-
 // ═══════════════════════════════════════════════════════
 //                    الشاشات
 // ═══════════════════════════════════════════════════════
@@ -591,7 +589,6 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
   RepeatType _repeat = RepeatType.once;
   List<int> _days = [];
   String _audioPath = '';
-  bool _isRecording = false;
 
   final _dayNames = ['السبت','الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة'];
 
@@ -600,18 +597,10 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
     if (t != null) setState(() => _time = t);
   }
 
-  Future<void> _toggleRecording() async {
-    if (_isRecording) {
-      final path = await AudioService.stopRecording();
-      setState(() {
-        _isRecording = false;
-        if (path != null) _audioPath = path;
-      });
-    } else {
-      final path = await AudioService.startRecording();
-      if (path != null) {
-        setState(() { _isRecording = true; _audioPath = path; });
-      }
+  Future<void> _pickAudio() async {
+    final path = await AudioService.pickAudioFile();
+    if (path != null) {
+      setState(() => _audioPath = path);
     }
   }
 
@@ -696,11 +685,9 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: _toggleRecording,
-                  icon: Icon(_isRecording ? Icons.stop : Icons.mic),
-                  label: Text(_isRecording ? 'إيقاف التسجيل' : 'تسجيل صوت'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _isRecording ? AppColors.error : AppColors.primary),
+                  onPressed: _pickAudio,
+                  icon: const Icon(Icons.audio_file),
+                  label: const Text('اختيار ملف صوتي'),
                 ),
               ),
               const SizedBox(width: 8),
@@ -723,9 +710,6 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
     );
   }
 }
-// ═══════════════════════════════════════════════════════
-//              شاشة البومودورو (المذاكرة)
-// ═══════════════════════════════════════════════════════
 
 class PomodoroScreen extends StatefulWidget {
   const PomodoroScreen({super.key});
@@ -992,7 +976,6 @@ class _PomodoroScreenState extends State<PomodoroScreen> {
   }
 }
 
-// ─── إعدادات البومودورو ───
 class PomodoroSettingsScreen extends StatefulWidget {
   final PomodoroSettings settings;
   const PomodoroSettingsScreen({super.key, required this.settings});
@@ -1005,8 +988,6 @@ class _PomodoroSettingsScreenState extends State<PomodoroSettingsScreen> {
   late int _break;
   late String _startAudio;
   late String _breakAudio;
-  bool _recording = false;
-  String _recordingTarget = '';
 
   @override
   void initState() {
@@ -1017,22 +998,13 @@ class _PomodoroSettingsScreenState extends State<PomodoroSettingsScreen> {
     _breakAudio = widget.settings.breakAudioPath;
   }
 
-  Future<void> _toggleRecord(String target) async {
-    if (_recording && _recordingTarget == target) {
-      final path = await AudioService.stopRecording();
+  Future<void> _pickAudio(String target) async {
+    final path = await AudioService.pickAudioFile();
+    if (path != null) {
       setState(() {
-        _recording = false;
-        if (path != null) {
-          if (target == 'start') _startAudio = path;
-          if (target == 'break') _breakAudio = path;
-        }
+        if (target == 'start') _startAudio = path;
+        if (target == 'break') _breakAudio = path;
       });
-    } else {
-      if (_recording) await AudioService.stopRecording();
-      final path = await AudioService.startRecording();
-      if (path != null) {
-        setState(() { _recording = true; _recordingTarget = target; });
-      }
     }
   }
 
@@ -1087,7 +1059,6 @@ class _PomodoroSettingsScreenState extends State<PomodoroSettingsScreen> {
   }
 
   Widget _audioTile(String label, String path, String target) {
-    final isRec = _recording && _recordingTarget == target;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -1100,12 +1071,9 @@ class _PomodoroSettingsScreenState extends State<PomodoroSettingsScreen> {
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: () => _toggleRecord(target),
-                    icon: Icon(isRec ? Icons.stop : Icons.mic),
-                    label: Text(isRec ? 'إيقاف' : 'تسجيل'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: isRec ? AppColors.error : AppColors.primary,
-                    ),
+                    onPressed: () => _pickAudio(target),
+                    icon: const Icon(Icons.audio_file),
+                    label: const Text('اختيار ملف صوتي'),
                   ),
                 ),
                 if (path.isNotEmpty) ...[
@@ -1123,8 +1091,10 @@ class _PomodoroSettingsScreenState extends State<PomodoroSettingsScreen> {
     );
   }
 }
+// ═══════════════════════════════════════════════════════
+//              شاشة الإحصائيات
+// ═══════════════════════════════════════════════════════
 
-// ─── شاشة الإحصائيات ───
 class StatisticsScreen extends StatefulWidget {
   const StatisticsScreen({super.key});
   @override
@@ -1224,7 +1194,10 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   }
 }
 
-// ─── شاشة الإعدادات ───
+// ═══════════════════════════════════════════════════════
+//              شاشة الإعدادات
+// ═══════════════════════════════════════════════════════
+
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
@@ -1290,7 +1263,10 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
-// ─── شاشة عن التطبيق ───
+// ═══════════════════════════════════════════════════════
+//              شاشة عن التطبيق
+// ═══════════════════════════════════════════════════════
+
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
 
