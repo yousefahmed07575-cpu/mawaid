@@ -1,0 +1,51 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout our code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Create Flutter project
+        run: flutter create --org com.yousef --project-name mawaid temp_project
+
+      - name: Add permissions to AndroidManifest
+        run: |
+          MANIFEST="temp_project/android/app/src/main/AndroidManifest.xml"
+          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application|' $MANIFEST
+
+      - name: Copy our custom code
+        run: |
+          cp lib/main.dart temp_project/lib/main.dart
+          cp pubspec.yaml temp_project/pubspec.yaml
+
+      - name: Get dependencies
+        run: cd temp_project && flutter pub get
+
+      - name: Build APK
+        run: cd temp_project && flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mawaid-apk
+          path: temp_project/build/app/outputs/flutter-apk/app-release.apk no
