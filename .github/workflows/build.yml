@@ -32,6 +32,13 @@ jobs:
         run: |
           sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' temp_project/android/app/build.gradle
 
+      - name: Upgrade Kotlin version
+        run: |
+          sed -i 's/ext.kotlin_version = .*/ext.kotlin_version = "1.9.22"/' temp_project/android/build.gradle
+          if ! grep -q 'ext.kotlin_version' temp_project/android/build.gradle; then
+            sed -i 's/^buildscript {/buildscript {\n    ext.kotlin_version = "1.9.22"/' temp_project/android/build.gradle
+          fi
+
       - name: Add permissions to AndroidManifest
         run: |
           MANIFEST="temp_project/android/app/src/main/AndroidManifest.xml"
