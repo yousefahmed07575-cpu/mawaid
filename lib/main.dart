@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:alarm/alarm.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -113,7 +114,7 @@ class Appointment {
   String recurrenceLabel() {
     switch (recurrence) {
       case RecurrenceType.once:
-        return DateFormat('EEEE d MMM - hh:mm a', 'ar').format(dateTime);
+        return DateFormat('EEEE d MMM - hh:mm a').format(dateTime);
       case RecurrenceType.daily:
         return 'كل يوم - ${DateFormat('hh:mm a').format(dateTime)}';
       case RecurrenceType.weekly:
@@ -142,13 +143,43 @@ class StudySession {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Pomodoro Settings Model
+// ═══════════════════════════════════════════════════════════════
+class PomodoroSettings {
+  int studyMinutes;
+  int breakMinutes;
+  String? studySoundPath;
+  String? breakSoundPath;
+
+  PomodoroSettings({
+    this.studyMinutes = 25,
+    this.breakMinutes = 5,
+    this.studySoundPath,
+    this.breakSoundPath,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'studyMinutes': studyMinutes,
+        'breakMinutes': breakMinutes,
+        'studySoundPath': studySoundPath,
+        'breakSoundPath': breakSoundPath,
+      };
+
+  factory PomodoroSettings.fromJson(Map<String, dynamic> j) => PomodoroSettings(
+        studyMinutes: (j['studyMinutes'] as int?) ?? 25,
+        breakMinutes: (j['breakMinutes'] as int?) ?? 5,
+        studySoundPath: j['studySoundPath'] as String?,
+        breakSoundPath: j['breakSoundPath'] as String?,
+      );
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Alarm Service
 // ═══════════════════════════════════════════════════════════════
 class AlarmService {
   AlarmService._();
   static final AlarmService I = AlarmService._();
 
-  /// حساب الوقت الجاي للمنبه حسب نوع التكرار
   DateTime calculateNextTime(Appointment a, {DateTime? from}) {
     final now = from ?? DateTime.now();
 
@@ -167,7 +198,6 @@ class AlarmService {
       return candidate;
     }
 
-    // weekly
     if (a.weekdays.isEmpty) return a.dateTime;
     for (int i = 0; i < 8; i++) {
       final checkDate = now.add(Duration(days: i));
@@ -186,18 +216,15 @@ class AlarmService {
     return now.add(const Duration(days: 7));
   }
 
-  /// جدولة منبه جديد
   Future<void> schedule(Appointment a) async {
     final alarmId = generateAlarmId(a.id);
     final nextTime = calculateNextTime(a);
 
-    // لو الوقت فات ومرة واحدة فقط، متجدولش
     if (nextTime.isBefore(DateTime.now()) &&
         a.recurrence == RecurrenceType.once) {
       return;
     }
 
-    // الصوت: لو موجود ملف مخصص استخدمه، وإلا استخدم صوت المنبه الافتراضي
     String soundPath;
     if (a.soundPath != null && File(a.soundPath!).existsSync()) {
       soundPath = a.soundPath!;
@@ -227,13 +254,11 @@ class AlarmService {
     await Alarm.set(alarmSettings: settings);
   }
 
-  /// إلغاء منبه
   Future<void> cancel(String appointmentId) async {
     final alarmId = generateAlarmId(appointmentId);
     await Alarm.stop(alarmId);
   }
 
-  /// إلغاء كل المنبهات
   Future<void> cancelAll() async {
     await Alarm.stopAll();
   }
@@ -246,9 +271,11 @@ class AppState extends ChangeNotifier {
   static const _kAppts = 'appointments_v5';
   static const _kSessions = 'sessions_v5';
   static const _kDark = 'dark_mode_v5';
+  static const _kPomodoro = 'pomodoro_settings_v1';
 
   final List<Appointment> appointments = [];
   final List<StudySession> sessions = [];
+  PomodoroSettings pomodoro = PomodoroSettings();
   bool isDark = false;
   bool loaded = false;
 
@@ -277,6 +304,14 @@ class AppState extends ChangeNotifier {
         sessions.addAll(
           list.map((e) => StudySession.fromJson(e as Map<String, dynamic>)),
         );
+      } catch (_) {}
+    }
+
+    final pRaw = sp.getString(_kPomodoro);
+    if (pRaw != null) {
+      try {
+        pomodoro = PomodoroSettings.fromJson(
+            jsonDecode(pRaw) as Map<String, dynamic>);
       } catch (_) {}
     }
 
@@ -312,7 +347,6 @@ class AppState extends ChangeNotifier {
       ),
     );
 
-    // إعادة جدولة المنبه لو متكرر
     if (appt.recurrence != RecurrenceType.once) {
       Future.delayed(const Duration(seconds: 3), () {
         if (appointments.any((x) => x.id == appt.id)) {
@@ -336,6 +370,17 @@ class AppState extends ChangeNotifier {
       _kSessions,
       jsonEncode(sessions.map((e) => e.toJson()).toList()),
     );
+  }
+
+  Future<void> _persistPomodoro() async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(_kPomodoro, jsonEncode(pomodoro.toJson()));
+  }
+
+  Future<void> updatePomodoro(PomodoroSettings s) async {
+    pomodoro = s;
+    await _persistPomodoro();
+    notifyListeners();
   }
 
   Future<void> addAppointment(Appointment a) async {
@@ -377,10 +422,12 @@ class AppState extends ChangeNotifier {
   Future<void> clearAll() async {
     appointments.clear();
     sessions.clear();
+    pomodoro = PomodoroSettings();
     await AlarmService.I.cancelAll();
     final sp = await SharedPreferences.getInstance();
     await sp.remove(_kAppts);
     await sp.remove(_kSessions);
+    await sp.remove(_kPomodoro);
     notifyListeners();
   }
 
@@ -428,7 +475,6 @@ class MawaidApp extends StatelessWidget {
         useMaterial3: true,
       ),
       home: const HomeScreen(),
-      locale: const Locale('ar'),
     );
   }
 }
@@ -1064,73 +1110,171 @@ class _AddAppointmentScreenState extends State<AddAppointmentScreen> {
 // ═══════════════════════════════════════════════════════════════
 //  Alarm Screen
 // ═══════════════════════════════════════════════════════════════
-class AlarmScreen extends StatelessWidget {
+class AlarmScreen extends StatefulWidget {
   final Appointment appointment;
   const AlarmScreen({super.key, required this.appointment});
 
   @override
+  State<AlarmScreen> createState() => _AlarmScreenState();
+}
+
+class _AlarmScreenState extends State<AlarmScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _anim;
+
+  @override
+  void initState() {
+    super.initState();
+    _anim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final a = widget.appointment;
+    final timeStr = DateFormat('hh:mm a').format(DateTime.now());
+
     return PopScope(
       canPop: false,
       child: Scaffold(
-        backgroundColor: Colors.red.shade900,
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.alarm, size: 140, color: Colors.white),
-                const SizedBox(height: 32),
-                const Text('⏰ وقت الموعد',
-                    style: TextStyle(color: Colors.white70, fontSize: 18)),
-                const SizedBox(height: 12),
-                Text(
-                  appointment.title,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 36,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                if (appointment.note.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Text(
-                    appointment.note,
-                    textAlign: TextAlign.center,
-                    style:
-                        const TextStyle(color: Colors.white70, fontSize: 18),
-                  ),
-                ],
-                const SizedBox(height: 24),
-                Text(
-                  DateFormat('hh:mm a').format(DateTime.now()),
-                  style: const TextStyle(color: Colors.white, fontSize: 22),
-                ),
-                const Spacer(),
-                SizedBox(
-                  width: double.infinity,
-                  height: 70,
-                  child: FilledButton.icon(
-                    onPressed: () async {
-                      await Alarm.stop(generateAlarmId(appointment.id));
-                      if (context.mounted) {
-                        Navigator.of(context).pop();
-                      }
-                    },
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: Colors.red.shade900,
-                    ),
-                    icon: const Icon(Icons.stop_circle, size: 32),
-                    label: const Text('إيقاف',
-                        style: TextStyle(
-                            fontSize: 24, fontWeight: FontWeight.bold)),
-                  ),
-                ),
-                const SizedBox(height: 16),
+        backgroundColor: Colors.black,
+        body: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.red.shade900,
+                Colors.black,
               ],
+            ),
+          ),
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ScaleTransition(
+                    scale: Tween(begin: 1.0, end: 1.12).animate(
+                      CurvedAnimation(parent: _anim, curve: Curves.easeInOut),
+                    ),
+                    child: Container(
+                      width: 160,
+                      height: 160,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(32),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.3),
+                          width: 3,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.red.shade900.withOpacity(0.6),
+                            blurRadius: 40,
+                            spreadRadius: 5,
+                          ),
+                        ],
+                      ),
+                      child: const Icon(
+                        Icons.alarm,
+                        size: 100,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 40),
+                  const Text(
+                    '⏰ وقت الموعد',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 20,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 16,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      a.title,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 34,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  if (a.note.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Text(
+                      a.note,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  Text(
+                    timeStr,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 56,
+                      fontWeight: FontWeight.w300,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                  const Spacer(),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 80,
+                    child: FilledButton.icon(
+                      onPressed: () async {
+                        try {
+                          await Alarm.stop(generateAlarmId(a.id));
+                        } catch (_) {}
+                        if (context.mounted) {
+                          Navigator.of(context).pop();
+                        }
+                      },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.red.shade900,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(40),
+                        ),
+                      ),
+                      icon: const Icon(Icons.stop_circle, size: 38),
+                      label: const Text(
+                        'إيقاف',
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                ],
+              ),
             ),
           ),
         ),
@@ -1140,7 +1284,7 @@ class AlarmScreen extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Pomodoro Screen
+//  Pomodoro Screen - معدل بالكامل
 // ═══════════════════════════════════════════════════════════════
 class PomodoroScreen extends StatefulWidget {
   const PomodoroScreen({super.key});
@@ -1150,13 +1294,30 @@ class PomodoroScreen extends StatefulWidget {
 }
 
 class _PomodoroScreenState extends State<PomodoroScreen> {
-  static const studyMin = 25;
-  static const breakMin = 5;
+  final AudioPlayer _player = AudioPlayer();
 
-  int _remaining = studyMin * 60;
+  int _remaining = 0;
   bool _isStudy = true;
   bool _running = false;
+  bool _initialized = false;
   Timer? _t;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_initialized) {
+      final p = context.read<AppState>().pomodoro;
+      _remaining = p.studyMinutes * 60;
+      _initialized = true;
+    }
+  }
+
+  @override
+  void dispose() {
+    _t?.cancel();
+    _player.dispose();
+    super.dispose();
+  }
 
   void _start() {
     if (_running) return;
@@ -1177,43 +1338,96 @@ class _PomodoroScreenState extends State<PomodoroScreen> {
 
   void _reset() {
     _t?.cancel();
+    final p = context.read<AppState>().pomodoro;
     setState(() {
       _running = false;
       _isStudy = true;
-      _remaining = studyMin * 60;
+      _remaining = p.studyMinutes * 60;
     });
+  }
+
+  Future<void> _playSound(String? path) async {
+    try {
+      if (path != null && File(path).existsSync()) {
+        await _player.play(DeviceFileSource(path));
+      } else {
+        // صوت افتراضي: نستخدم نغمة المنبه الافتراضية
+        await _player.play(DeviceFileSource(
+            '/system/media/audio/alarms/Alarm_Clock.mp3'));
+      }
+    } catch (e) {
+      debugPrint('Sound error: $e');
+    }
   }
 
   Future<void> _switch() async {
     _t?.cancel();
+    final p = context.read<AppState>().pomodoro;
+
     if (_isStudy) {
-      await context.read<AppState>().addSession(studyMin);
+      await context.read<AppState>().addSession(p.studyMinutes);
+      // شغل صوت نهاية المذاكرة
+      await _playSound(p.studySoundPath);
+    } else {
+      // شغل صوت نهاية الراحة
+      await _playSound(p.breakSoundPath);
     }
+
     setState(() {
       _isStudy = !_isStudy;
-      _remaining = (_isStudy ? studyMin : breakMin) * 60;
+      _remaining = (_isStudy ? p.studyMinutes : p.breakMinutes) * 60;
       _running = false;
     });
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_isStudy ? 'ابدأ المذاكرة!' : 'وقت الراحة!')),
+        SnackBar(
+          content: Text(
+              _isStudy ? '📚 ابدأ المذاكرة!' : '☕ وقت الراحة!'),
+          duration: const Duration(seconds: 5),
+        ),
       );
     }
   }
 
-  @override
-  void dispose() {
-    _t?.cancel();
-    super.dispose();
+  Future<void> _openSettings() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const PomodoroSettingsScreen()),
+    );
+    // إعادة تهيئة العداد بعد الرجوع
+    if (mounted) {
+      final p = context.read<AppState>().pomodoro;
+      if (!_running) {
+        setState(() {
+          _isStudy = true;
+          _remaining = p.studyMinutes * 60;
+        });
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final p = context.watch<AppState>().pomodoro;
     final m = (_remaining ~/ 60).toString().padLeft(2, '0');
     final s = (_remaining % 60).toString().padLeft(2, '0');
     final color = _isStudy ? Colors.teal : Colors.orange;
+    final totalSec =
+        (_isStudy ? p.studyMinutes : p.breakMinutes) * 60;
+    final progress = totalSec == 0 ? 0.0 : 1 - (_remaining / totalSec);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('بومودورو')),
+      appBar: AppBar(
+        title: const Text('بومودورو'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.tune),
+            tooltip: 'إعدادات البومودورو',
+            onPressed: _openSettings,
+          ),
+        ],
+      ),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1221,27 +1435,55 @@ class _PomodoroScreenState extends State<PomodoroScreen> {
             Text(
               _isStudy ? '📚 وقت المذاكرة' : '☕ وقت الراحة',
               style: TextStyle(
-                  fontSize: 24, fontWeight: FontWeight.bold, color: color),
+                  fontSize: 26, fontWeight: FontWeight.bold, color: color),
             ),
-            const SizedBox(height: 24),
-            Container(
-              width: 240,
-              height: 240,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: color, width: 8),
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                '$m:$s',
-                style: TextStyle(
-                  fontSize: 64,
-                  fontWeight: FontWeight.bold,
-                  color: color,
-                ),
-              ),
+            const SizedBox(height: 8),
+            Text(
+              '${p.studyMinutes} دقيقة مذاكرة • ${p.breakMinutes} دقيقة راحة',
+              style: const TextStyle(fontSize: 14, color: Colors.grey),
             ),
             const SizedBox(height: 32),
+            SizedBox(
+              width: 260,
+              height: 260,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  SizedBox(
+                    width: 260,
+                    height: 260,
+                    child: CircularProgressIndicator(
+                      value: progress,
+                      strokeWidth: 10,
+                      backgroundColor: color.withOpacity(0.15),
+                      valueColor: AlwaysStoppedAnimation<Color>(color),
+                    ),
+                  ),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '$m:$s',
+                        style: TextStyle(
+                          fontSize: 62,
+                          fontWeight: FontWeight.bold,
+                          color: color,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _isStudy ? 'مذاكرة' : 'راحة',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: color.withOpacity(0.7),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 40),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -1251,7 +1493,7 @@ class _PomodoroScreenState extends State<PomodoroScreen> {
                   label: Text(_running ? 'إيقاف مؤقت' : 'ابدأ'),
                   style: FilledButton.styleFrom(
                     backgroundColor: color,
-                    minimumSize: const Size(140, 52),
+                    minimumSize: const Size(150, 56),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1259,11 +1501,263 @@ class _PomodoroScreenState extends State<PomodoroScreen> {
                   onPressed: _reset,
                   icon: const Icon(Icons.refresh),
                   label: const Text('إعادة'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(120, 56),
+                  ),
                 ),
               ],
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Pomodoro Settings Screen
+// ═══════════════════════════════════════════════════════════════
+class PomodoroSettingsScreen extends StatefulWidget {
+  const PomodoroSettingsScreen({super.key});
+
+  @override
+  State<PomodoroSettingsScreen> createState() =>
+      _PomodoroSettingsScreenState();
+}
+
+class _PomodoroSettingsScreenState extends State<PomodoroSettingsScreen> {
+  late int _studyMin;
+  late int _breakMin;
+  String? _studySoundPath;
+  String? _breakSoundPath;
+
+  @override
+  void initState() {
+    super.initState();
+    final p = context.read<AppState>().pomodoro;
+    _studyMin = p.studyMinutes;
+    _breakMin = p.breakMinutes;
+    _studySoundPath = p.studySoundPath;
+    _breakSoundPath = p.breakSoundPath;
+  }
+
+  Future<void> _pickSound({required bool isStudy}) async {
+    try {
+      final r = await FilePicker.platform.pickFiles(type: FileType.audio);
+      if (r == null || r.files.single.path == null) return;
+      final src = File(r.files.single.path!);
+      final dir = await getApplicationDocumentsDirectory();
+      final ext = r.files.single.extension ?? 'mp3';
+      final prefix = isStudy ? 'study_end' : 'break_end';
+      final dest = File(
+          '${dir.path}/${prefix}_${DateTime.now().millisecondsSinceEpoch}.$ext');
+      await src.copy(dest.path);
+      setState(() {
+        if (isStudy) {
+          _studySoundPath = dest.path;
+        } else {
+          _breakSoundPath = dest.path;
+        }
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  isStudy ? 'تم اختيار صوت المذاكرة ✅' : 'تم اختيار صوت الراحة ✅')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في اختيار الملف: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _save() async {
+    if (_studyMin < 1 || _studyMin > 180) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('وقت المذاكرة لازم يكون بين 1 و 180 دقيقة')),
+      );
+      return;
+    }
+    if (_breakMin < 1 || _breakMin > 60) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('وقت الراحة لازم يكون بين 1 و 60 دقيقة')),
+      );
+      return;
+    }
+    final s = PomodoroSettings(
+      studyMinutes: _studyMin,
+      breakMinutes: _breakMin,
+      studySoundPath: _studySoundPath,
+      breakSoundPath: _breakSoundPath,
+    );
+    await context.read<AppState>().updatePomodoro(s);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تم حفظ الإعدادات ✅')),
+      );
+      Navigator.pop(context);
+    }
+  }
+
+  Widget _numberControl({
+    required String label,
+    required int value,
+    required VoidCallback onMinus,
+    required VoidCallback onPlus,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          Text(label,
+              style: TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _roundButton(
+                icon: Icons.remove,
+                color: color,
+                onTap: onMinus,
+              ),
+              Column(
+                children: [
+                  Text(
+                    '$value',
+                    style: TextStyle(
+                      fontSize: 48,
+                      fontWeight: FontWeight.bold,
+                      color: color,
+                    ),
+                  ),
+                  const Text('دقيقة', style: TextStyle(fontSize: 12)),
+                ],
+              ),
+              _roundButton(
+                icon: Icons.add,
+                color: color,
+                onTap: onPlus,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _roundButton({
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: color,
+      shape: const CircleBorder(),
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Icon(icon, color: Colors.white, size: 28),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('إعدادات البومودورو')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _numberControl(
+            label: '📚 وقت المذاكرة',
+            value: _studyMin,
+            color: Colors.teal,
+            onMinus: () => setState(() {
+              if (_studyMin > 1) _studyMin--;
+            }),
+            onPlus: () => setState(() {
+              if (_studyMin < 180) _studyMin++;
+            }),
+          ),
+          const SizedBox(height: 12),
+          _numberControl(
+            label: '☕ وقت الراحة',
+            value: _breakMin,
+            color: Colors.orange,
+            onMinus: () => setState(() {
+              if (_breakMin > 1) _breakMin--;
+            }),
+            onPlus: () => setState(() {
+              if (_breakMin < 60) _breakMin++;
+            }),
+          ),
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 8),
+          const Text('🔔 أصوات التنبيه',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.menu_book, color: Colors.teal),
+              title: const Text('صوت نهاية المذاكرة'),
+              subtitle: Text(
+                _studySoundPath == null
+                    ? 'افتراضي'
+                    : _studySoundPath!.split('/').last,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.folder_open),
+                onPressed: () => _pickSound(isStudy: true),
+              ),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.local_cafe, color: Colors.orange),
+              title: const Text('صوت نهاية الراحة'),
+              subtitle: Text(
+                _breakSoundPath == null
+                    ? 'افتراضي'
+                    : _breakSoundPath!.split('/').last,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.folder_open),
+                onPressed: () => _pickSound(isStudy: false),
+              ),
+            ),
+          ),
+          const SizedBox(height: 32),
+          FilledButton.icon(
+            onPressed: _save,
+            icon: const Icon(Icons.save),
+            label: const Text('حفظ الإعدادات',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(56),
+              backgroundColor: Colors.teal,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1370,6 +1864,17 @@ class SettingsScreen extends StatelessWidget {
           ),
           const Divider(),
           ListTile(
+            leading: const Icon(Icons.timer_outlined),
+            title: const Text('إعدادات البومودورو'),
+            subtitle: Text(
+                '${state.pomodoro.studyMinutes} دقيقة مذاكرة • ${state.pomodoro.breakMinutes} دقيقة راحة'),
+            onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const PomodoroSettingsScreen())),
+          ),
+          const Divider(),
+          ListTile(
             leading: const Icon(Icons.info_outline),
             title: const Text('عن التطبيق'),
             onTap: () => Navigator.push(context,
@@ -1450,7 +1955,7 @@ class AboutScreen extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                       color: Colors.teal)),
               SizedBox(height: 8),
-              Text('الإصدار 1.1.0',
+              Text('الإصدار 1.2.0',
                   style: TextStyle(color: Colors.grey, fontSize: 13)),
             ],
           ),
