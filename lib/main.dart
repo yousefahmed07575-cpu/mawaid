@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 //  mawaid - تطبيق مواعيد ومنبه المذاكرة
 //  المهندس يوسف أحمد مصطفى
-//  نسخة آمنة 100% + استرجاع البيانات القديمة
+//  نسخة آمنة 100% + استرجاع البيانات القديمة + صوت واحد
 // ═══════════════════════════════════════════════════════════════
 
 import 'dart:async';
@@ -199,6 +199,7 @@ class PomodoroSettings {
 
 // ═══════════════════════════════════════════════════════════════
 //  Alarm Service - آمن تماماً
+//  ⚠️ مكتبة alarm بتعمل Silent Sound عشان AudioPlayer يشتغل لوحده
 // ═══════════════════════════════════════════════════════════════
 class AlarmService {
   AlarmService._();
@@ -248,8 +249,7 @@ class AlarmService {
         return;
       }
 
-      // ⚠️ ملاحظة: نستخدم صوت من النظام (silent audio مش هيتشغل هنا)
-      // الصوت الحقيقي بيتشغل من AlarmScreen عبر audioplayers
+      // ⚠️ مسار صوت موجود (عشان alarm ميرفضش) لكن بصوت صفر
       String soundPath;
       if (a.soundPath != null && File(a.soundPath!).existsSync()) {
         soundPath = a.soundPath!;
@@ -261,14 +261,14 @@ class AlarmService {
         id: alarmId,
         dateTime: nextTime,
         assetAudioPath: soundPath,
-        loopAudio: true,
+        // ✅ لا تكرار — AudioPlayer في AlarmScreen هو اللي بيكرر
+        loopAudio: false,
         vibrate: true,
         androidFullScreenIntent: true,
-        // ✅ السطر المطلوب لحل خطأ البناء
-        volumeSettings: VolumeSettings.fade(
-          volume: 1.0,
-          fadeDuration: const Duration(seconds: 3),
-          volumeEnforced: false,
+        // ✅ الصوت بصفر — عشان الصوت الحقيقي من AudioPlayer فقط
+        volumeSettings: VolumeSettings.fixed(
+          volume: 0.0,
+          volumeEnforced: true,
         ),
         notificationSettings: NotificationSettings(
           title: '⏰ ${a.title}',
@@ -394,7 +394,6 @@ class AppState extends ChangeNotifier {
           appointments.addAll(
             list.whereType<Map<String, dynamic>>().map(Appointment.fromJson),
           );
-          // احفظ بالشكل الجديد
           await _persistAppts();
           if (usedKey != null) {
             debugPrint('✅ Migrated appointments from $usedKey');
@@ -1309,6 +1308,7 @@ class _AlarmScreenState extends State<AlarmScreen>
   late AnimationController _anim;
   AudioPlayer? _player;
   bool _stopped = false;
+  bool _soundStarted = false;
 
   @override
   void initState() {
@@ -1322,6 +1322,9 @@ class _AlarmScreenState extends State<AlarmScreen>
   }
 
   Future<void> _startSound() async {
+    if (_soundStarted) return;
+    _soundStarted = true;
+
     try {
       _player = AudioPlayer();
       await _player!.setReleaseMode(ReleaseMode.loop);
@@ -1330,15 +1333,21 @@ class _AlarmScreenState extends State<AlarmScreen>
       final path = widget.appointment.soundPath;
       if (path != null && path.isNotEmpty && File(path).existsSync()) {
         await _player!.play(DeviceFileSource(path));
-        debugPrint('✅ Playing custom sound');
+        debugPrint('✅ Playing custom sound: $path');
         return;
       }
 
       // احتياطي: صوت النظام
       try {
         await _player!.play(UrlSource(kSystemAlarmSound));
-      } catch (_) {
-        await _player!.play(UrlSource(kSystemNotifySound));
+        debugPrint('✅ Playing system alarm');
+      } catch (e) {
+        debugPrint('🔴 System alarm failed: $e');
+        try {
+          await _player!.play(UrlSource(kSystemNotifySound));
+        } catch (e2) {
+          debugPrint('🔴 Notification sound failed: $e2');
+        }
       }
     } catch (e) {
       debugPrint('🔴 Sound error: $e');
@@ -2147,7 +2156,7 @@ class AboutScreen extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                       color: Colors.teal)),
               SizedBox(height: 8),
-              Text('الإصدار 1.2.0',
+              Text('الإصدار 1.3.0',
                   style: TextStyle(color: Colors.grey, fontSize: 13)),
             ],
           ),
